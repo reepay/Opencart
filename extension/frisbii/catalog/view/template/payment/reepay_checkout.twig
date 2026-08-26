@@ -1,0 +1,27 @@
+<div class="d-grid gap-2 mt-3">
+  <input type="button" value="{{ button_confirm }}" id="button-confirm" class="btn btn-primary btn-lg"/>
+</div>
+
+<script>
+$('#button-confirm').on('click', function() {
+    var $btn = $(this);
+    $btn.prop('disabled', true).val('{{ text_loading }}');
+    $.ajax({
+        url: 'index.php?route=extension/frisbii/payment/reepay_checkout.confirm',
+        dataType: 'json',
+        complete: function() {
+            $btn.prop('disabled', false).val('{{ button_confirm }}');
+        },
+        success: function(json) {
+            if ('success' == json.status) {
+                location = json.body.url;
+            } else {
+                location = '{{ checkout_url }}';
+            }
+        },
+        error: function(xhr, ajaxOptions, thrownError) {
+            alert(thrownError + "\r\n" + xhr.statusText + "\r\n" + xhr.responseText);
+        }
+    });
+});
+</script>

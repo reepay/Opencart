@@ -1,0 +1,175 @@
+{{ header }}{{ column_left }}
+<div id="content">
+  <div class="page-header">
+    <div class="container-fluid">
+      <div class="float-end">
+        <button type="submit" form="form-payment" data-bs-toggle="tooltip" title="{{ button_save }}" class="btn btn-primary"><i class="fa-solid fa-save"></i></button>
+        <a href="{{ back }}" data-bs-toggle="tooltip" title="{{ button_back }}" class="btn btn-light"><i class="fa-solid fa-reply"></i></a>
+      </div>
+      <h1>{{ heading_title }}</h1>
+      <ol class="breadcrumb">
+        {% for breadcrumb in breadcrumbs %}
+          <li class="breadcrumb-item"><a href="{{ breadcrumb.href }}">{{ breadcrumb.text }}</a></li>
+        {% endfor %}
+      </ol>
+    </div>
+  </div>
+  <div class="container-fluid">
+    <div class="card">
+      <div class="card-header"><i class="fa-solid fa-pencil"></i> {{ text_edit }}</div>
+      <div class="card-body">
+        <form id="form-payment" action="{{ save }}" method="post" data-oc-toggle="ajax">
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-total">{{ entry_total }}</label>
+            <div class="col-sm-10">
+              <input type="text" name="payment_reepay_checkout_total" value="{{ payment_reepay_checkout_total }}" placeholder="{{ entry_total }}" id="input-total" class="form-control"/>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-method-title">{{ entry_payment_method_title }}</label>
+            <div class="col-sm-10">
+              <input type="text" name="payment_reepay_checkout_method_title" value="{{ payment_reepay_checkout_method_title }}" id="input-method-title" class="form-control"/>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-private-key-live">{{ entry_private_key_live }}</label>
+            <div class="col-sm-10">
+              <input type="text" name="payment_reepay_checkout_private_key_live" value="{{ payment_reepay_checkout_private_key_live }}" id="input-private-key-live" class="form-control"/>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-private-key-test">{{ entry_private_key_test }}</label>
+            <div class="col-sm-10">
+              <input type="text" name="payment_reepay_checkout_private_key_test" value="{{ payment_reepay_checkout_private_key_test }}" id="input-private-key-test" class="form-control"/>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-order-status">{{ entry_order_status }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_order_status_id" id="input-order-status" class="form-select">
+                {% for order_status in order_statuses %}
+                  <option value="{{ order_status.order_status_id }}"{% if order_status.order_status_id == payment_reepay_checkout_order_status_id %} selected{% endif %}>{{ order_status.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-instant-settle">{{ entry_instant_settle }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_instant_settle" id="input-instant-settle" class="form-select">
+                {% for option in yes_no_options %}
+                  <option value="{{ option.option }}"{% if option.option == payment_reepay_checkout_instant_settle %} selected{% endif %}>{{ option.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-test">{{ entry_test }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_test" id="input-test" class="form-select">
+                {% for option in yes_no_options %}
+                  <option value="{{ option.option }}"{% if option.option == payment_reepay_checkout_test %} selected{% endif %}>{{ option.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-debug-mode">{{ entry_debug_mode_test }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_debug" id="input-debug-mode" class="form-select">
+                {% for option in yes_no_options %}
+                  <option value="{{ option.option }}"{% if option.option == payment_reepay_checkout_debug %} selected{% endif %}>{{ option.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-checkout-type">{{ entry_checkout_type }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_checkout_type" id="input-checkout-type" class="form-select">
+                {% for payment_type in payment_types %}
+                  <option value="{{ payment_type.id }}"{% if payment_type.id == payment_reepay_checkout_checkout_type %} selected{% endif %}>{{ payment_type.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-payment-methods">{{ entry_payment_methods }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_payment_methods[]" id="input-payment-methods" class="form-select" multiple size="8">
+                {% for value, name in payment_methods %}
+                  <option value="{{ value }}"{% if value in payment_reepay_checkout_payment_methods %} selected{% endif %}>{{ name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-payment-logos">{{ entry_payment_logos }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_payment_logos[]" id="input-payment-logos" class="form-select" multiple size="8">
+                {% for value, name in payment_methods %}
+                  {% if value != 'card' %}
+                    <option value="{{ value }}"{% if value in payment_reepay_checkout_payment_logos %} selected{% endif %}>{{ name }}</option>
+                  {% endif %}
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-order-lines">{{ entry_order_lines }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_order_lines" id="input-order-lines" class="form-select">
+                {% for option in yes_no_options %}
+                  <option value="{{ option.option }}"{% if option.option == payment_reepay_checkout_order_lines %} selected{% endif %}>{{ option.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-geo-zone">{{ entry_geo_zone }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_geo_zone_id" id="input-geo-zone" class="form-select">
+                <option value="0">{{ text_all_zones }}</option>
+                {% for geo_zone in geo_zones %}
+                  <option value="{{ geo_zone.geo_zone_id }}"{% if geo_zone.geo_zone_id == payment_reepay_checkout_geo_zone_id %} selected{% endif %}>{{ geo_zone.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label">{{ entry_status }}</label>
+            <div class="col-sm-10">
+              <div class="form-check form-switch form-switch-lg">
+                <input type="hidden" name="payment_reepay_checkout_status" value="0"/>
+                <input type="checkbox" name="payment_reepay_checkout_status" value="1" id="input-status" class="form-check-input"{% if payment_reepay_checkout_status %} checked{% endif %}/>
+              </div>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-sort-order">{{ entry_sort_order }}</label>
+            <div class="col-sm-10">
+              <input type="text" name="payment_reepay_checkout_sort_order" value="{{ payment_reepay_checkout_sort_order }}" placeholder="{{ entry_sort_order }}" id="input-sort-order" class="form-control"/>
+            </div>
+          </div>
+
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{{ footer }}

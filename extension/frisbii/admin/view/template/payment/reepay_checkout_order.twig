@@ -1,0 +1,7 @@
+<div id="reepay-api-control"></div>
+
+<script>
+$.get('index.php?route=extension/frisbii/payment/reepay_checkout.control&order_id={{ order_id }}&user_token={{ user_token }}', function(data) {
+    $('#reepay-api-control').html(data);
+});
+</script>
