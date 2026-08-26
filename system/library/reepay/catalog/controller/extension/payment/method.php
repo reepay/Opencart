@@ -1,11 +1,10 @@
 <?php
 
-namespace Reepay\Catalog\Controller\Extension\Payment;
+namespace Opencart\System\Library\Extension\Frisbii\Reepay\Catalog\Controller\Extension\Payment;
 
 trait Method {
 
-    public function index() {
-        return $this->load->view('extension/payment/reepay_checkout', []);
+    public function index(): string {
+        return $this->load->view('extension/frisbii/payment/reepay_checkout', []);
     }
-
 }

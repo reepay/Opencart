@@ -44,12 +44,12 @@ You can create issues on our repository. In case of specific problems with your 
 
 ### v 1.1.3
 
-[Feature] - Full OpenCart 4.x (OC4) compatibility. The extension has been completely ported from OC3 to OC4, adopting the new namespace structure (`Opencart\*`), `install.json` manifest, and OC4 model/controller conventions.
-[Feature] - Added 10 individually configurable sub-payment methods: MobilePay, Vipps, Anyday, ViaBill, Swish, Diners Club, Maestro, Discover, JCB, Forbrugsforeningen — each can be enabled and titled separately in the admin.
-[Feature] - Address fallback chain for no-shipping products (e.g. digital goods): the extension now resolves billing country from payment address → shipping address → session → customer's saved address in the database, preventing checkout failures when no shipping step is shown.
-[Fix] - Fixed sub-payment method settings pages (title and enabled status) not retaining their saved values when reopened in the admin.
-[Fix] - Updated `addHistory()` call to match the OC4 order model API (was `addOrderHistory()` in OC3).
-[Fix] - Updated `getTotals()` invocation to use OC4 callable syntax.
-[Fix] - Resolved billing address country being empty for orders without a shipping requirement, which caused a 422 error from the Frisbii API.
-[Docs] - Added `install.json` manifest required by the OC4 Extension Installer.
-[Docs] - Updated README with OC4 installation guide and changelog.
+- [Feature] - Full OpenCart 4.x (OC4) compatibility. The extension has been completely ported from OC3 to OC4, adopting the new namespace structure (`Opencart\*`), `install.json` manifest, and OC4 model/controller conventions.
+- [Feature] - Added 10 individually configurable sub-payment methods: MobilePay, Vipps, Anyday, ViaBill, Swish, Diners Club, Maestro, Discover, JCB, Forbrugsforeningen — each can be enabled and titled separately in the admin.
+- [Feature] - Address fallback chain for no-shipping products (e.g. digital goods): the extension now resolves billing country from payment address → shipping address → session → customer's saved address in the database, preventing checkout failures when no shipping step is shown.
+- [Fix] - Fixed sub-payment method settings pages (title and enabled status) not retaining their saved values when reopened in the admin.
+- [Fix] - Updated `addHistory()` call to match the OC4 order model API (was `addOrderHistory()` in OC3).
+- [Fix] - Updated `getTotals()` invocation to use OC4 callable syntax.
+- [Fix] - Resolved billing address country being empty for orders without a shipping requirement, which caused a 422 error from the Frisbii API.
+- [Docs] - Added `install.json` manifest required by the OC4 Extension Installer.
+- [Docs] - Updated README with OC4 installation guide and changelog.
