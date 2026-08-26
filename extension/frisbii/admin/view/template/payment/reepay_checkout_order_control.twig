@@ -1,0 +1,176 @@
+<div class="table-responsive">
+  <table class="table table-bordered">
+    <thead>
+      <tr><td colspan="2"><h3>{{ text_reepay_order_detail_caption }}</h3></td></tr>
+    </thead>
+    <tbody>
+      <tr><td><b>{{ Order_id }}:</b></td><td>{{ handle }}</td></tr>
+      <tr><td>{{ transaction_id }}:</td><td>{{ id }}</td></tr>
+      <tr><td>{{ invoice_state }}:</td><td>{{ state }}</td></tr>
+      {% if authorized_amount > 0 %}
+        <tr><td>{{ total_authorized }}:</td><td>{{ authorized_amount }}</td></tr>
+      {% endif %}
+      <tr><td>{{ total_settled }}:</td><td>{{ settled_amount }}</td></tr>
+      <tr><td>{{ total_refunded }}:</td><td>{{ refunded_amount }}</td></tr>
+      <tr><td>{{ Payment_type }}:</td><td>{{ payment_type }}</td></tr>
+      {% if exp_date %}
+        <tr><td>{{ card_exp_date }}:</td><td>{{ exp_date }}</td></tr>
+      {% endif %}
+      {% if masked_card %}
+        <tr><td>{{ Masked_card }}:</td><td>{{ masked_card }}</td></tr>
+      {% endif %}
+      {% if card_type %}
+        <tr>
+          <td colspan="2">
+            <img src="extension/frisbii/image/reepay/reepay_{{ card_type }}.png" style="width:110px;height:60px;"/>
+          </td>
+        </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-bordered">
+    <thead>
+      <tr><td colspan="4"><h3>{{ reepay_transactions }}</h3></td></tr>
+      <tr>
+        <th>{{ th_type }}</th>
+        <th>{{ th_state }}</th>
+        <th>{{ th_amount }}</th>
+        <th>{{ th_transaction_id }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for transaction in transactions %}
+        <tr>
+          <td>{{ transaction.type }}</td>
+          <td>{{ transaction.state }}</td>
+          <td>{{ transaction.amount }}</td>
+          <td>{{ transaction.id }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-bordered">
+    <thead>
+      <tr><td colspan="2"><h3>{{ actions }}</h3></td></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ capture }}</td>
+        <td>
+          <input {% if amount_to_capture == 0 or state == 'cancelled' %}disabled{% endif %} id="reepay-settle-input" type="text" value="{{ amount_to_capture }}" class="form-control d-inline-block w-auto"/>
+          <button {% if amount_to_capture == 0 or state == 'cancelled' %}disabled{% endif %} id="capture-button" class="btn btn-primary ms-2">{{ capture }}</button>
+        </td>
+      </tr>
+      <tr>
+        <td>{{ refund }}</td>
+        <td>
+          <input {% if amount_to_refund == 0 or state == 'cancelled' %}disabled{% endif %} id="reepay-refund-input" type="text" value="{{ amount_to_refund }}" class="form-control d-inline-block w-auto"/>
+          <button {% if amount_to_refund == 0 or state == 'cancelled' %}disabled{% endif %} id="refund-button" class="btn btn-primary ms-2">{{ refund }}</button>
+        </td>
+      </tr>
+      <tr>
+        <td>{{ cancel }}</td>
+        <td>
+          <button {% if state != 'authorized' %}disabled{% endif %} id="void-button" class="btn btn-primary">{{ cancel }}</button>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+function reepayValidateAmount(amount) {
+    return (/^\d*[,\.]\d{2}$/.test(amount) || /^\d*$/.test(amount)) && amount > 0;
+}
+
+function reepayLoadControl() {
+    $.get('index.php?route=extension/frisbii/payment/reepay_checkout.control&order_id={{ order_id }}&user_token={{ user_token }}', function(data) {
+        $('#reepay-api-control').html(data);
+    });
+}
+
+function reepayDisableButtons() {
+    $('#capture-button, #refund-button, #void-button').prop('disabled', true);
+}
+
+$('#capture-button').on('click', function() {
+    var value = $('#reepay-settle-input').val();
+    if (!reepayValidateAmount(value)) {
+        alert('Incorrect amount value ' + value + '. Format must be like: 12.99 or 199');
+        $('#reepay-settle-input').val('{{ amount_to_capture }}');
+        return;
+    }
+    if (!window.confirm('Would you like to capture amount ' + value + '?')) {
+        $('#reepay-settle-input').val('{{ amount_to_capture }}');
+        return;
+    }
+    reepayDisableButtons();
+    $.ajax({
+        url: 'index.php?route=extension/frisbii/payment/reepay_checkout.charge_settle&user_token={{ user_token }}',
+        type: 'post',
+        data: { amount: value, handle: '{{ handle }}' },
+        success: function(response) {
+            response = JSON.parse(response);
+            if (response.status === 'success') {
+                alert('Capture was successful');
+            } else {
+                alert('Error during capture: ' + response.error);
+            }
+            reepayLoadControl();
+        }
+    });
+});
+
+$('#refund-button').on('click', function() {
+    var value = $('#reepay-refund-input').val();
+    if (!reepayValidateAmount(value)) {
+        alert('Incorrect amount value ' + value + '. Format must be like: 12.99 or 199');
+        $('#reepay-refund-input').val('{{ amount_to_refund }}');
+        return;
+    }
+    if (!window.confirm('Would you like to refund amount ' + value + '?')) {
+        $('#reepay-refund-input').val('{{ amount_to_refund }}');
+        return;
+    }
+    reepayDisableButtons();
+    $.ajax({
+        url: 'index.php?route=extension/frisbii/payment/reepay_checkout.refund_charge&user_token={{ user_token }}',
+        type: 'post',
+        data: { amount: value, handle: '{{ handle }}' },
+        success: function(response) {
+            response = JSON.parse(response);
+            if (response.status === 'success') {
+                alert('Refund was successful');
+            } else {
+                alert('Error during refund: ' + response.error);
+            }
+            reepayLoadControl();
+        }
+    });
+});
+
+$('#void-button').on('click', function() {
+    if (!window.confirm('Would you like to cancel amount {{ authorized_amount }}?')) return;
+    reepayDisableButtons();
+    $.ajax({
+        url: 'index.php?route=extension/frisbii/payment/reepay_checkout.void_charge&user_token={{ user_token }}',
+        type: 'post',
+        data: { amount: '{{ authorized_amount }}', handle: '{{ handle }}' },
+        success: function(response) {
+            response = JSON.parse(response);
+            if (response.status === 'success') {
+                alert('Cancel was successful');
+            } else {
+                alert('Error during cancel: ' + response.error);
+            }
+            reepayLoadControl();
+        }
+    });
+});
+</script>
