@@ -167,6 +167,60 @@
             </div>
           </div>
 
+          <hr/>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label">{{ text_webhook_url }}</label>
+            <div class="col-sm-10">
+              <input type="text" class="form-control" value="{{ webhook_url }}" readonly onclick="this.select()"/>
+              <small class="text-muted">{{ text_webhook_url_help }}</small>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-order-status-authorized">{{ entry_order_status_authorized }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_order_status_authorized_id" id="input-order-status-authorized" class="form-select">
+                {% for order_status in order_statuses %}
+                  <option value="{{ order_status.order_status_id }}"{% if order_status.order_status_id == payment_reepay_checkout_order_status_authorized_id %} selected{% endif %}>{{ order_status.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-order-status-settled">{{ entry_order_status_settled }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_order_status_settled_id" id="input-order-status-settled" class="form-select">
+                {% for order_status in order_statuses %}
+                  <option value="{{ order_status.order_status_id }}"{% if order_status.order_status_id == payment_reepay_checkout_order_status_settled_id %} selected{% endif %}>{{ order_status.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-order-status-cancelled">{{ entry_order_status_cancelled }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_order_status_cancelled_id" id="input-order-status-cancelled" class="form-select">
+                {% for order_status in order_statuses %}
+                  <option value="{{ order_status.order_status_id }}"{% if order_status.order_status_id == payment_reepay_checkout_order_status_cancelled_id %} selected{% endif %}>{{ order_status.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row mb-3">
+            <label class="col-sm-2 col-form-label" for="input-order-status-refunded">{{ entry_order_status_refunded }}</label>
+            <div class="col-sm-10">
+              <select name="payment_reepay_checkout_order_status_refunded_id" id="input-order-status-refunded" class="form-select">
+                {% for order_status in order_statuses %}
+                  <option value="{{ order_status.order_status_id }}"{% if order_status.order_status_id == payment_reepay_checkout_order_status_refunded_id %} selected{% endif %}>{{ order_status.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
         </form>
       </div>
     </div>

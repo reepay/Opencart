@@ -36,6 +36,10 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
             'payment_reepay_checkout_sort_order',
             'payment_reepay_checkout_geo_zone_id',
             'payment_reepay_checkout_order_status_id',
+            'payment_reepay_checkout_order_status_authorized_id',
+            'payment_reepay_checkout_order_status_settled_id',
+            'payment_reepay_checkout_order_status_cancelled_id',
+            'payment_reepay_checkout_order_status_refunded_id',
             'payment_reepay_checkout_private_key_live',
             'payment_reepay_checkout_private_key_test',
             'payment_reepay_checkout_checkout_type',
@@ -91,6 +95,12 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
             'klarna_slice_it'  => 'Klarna Slice It!',
         ];
 
+        $scheme      = (!empty($this->request->server['HTTPS']) && $this->request->server['HTTPS'] !== 'off') ? 'https' : 'http';
+        $host        = $this->request->server['HTTP_HOST'];
+        $admin_path  = $this->request->server['SCRIPT_NAME']; // e.g. /opencart_frisbii/admin/index.php
+        $catalog_dir = rtrim(dirname(dirname($admin_path)), '/') . '/'; // e.g. /opencart_frisbii/
+        $data['webhook_url'] = $scheme . '://' . $host . $catalog_dir . 'index.php?route=extension/frisbii/payment/reepay_checkout.webhook';
+
         $data['header']      = $this->load->controller('common/header');
         $data['column_left'] = $this->load->controller('common/column_left');
         $data['footer']      = $this->load->controller('common/footer');
@@ -106,6 +116,22 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         if (!$this->user->hasPermission('modify', 'extension/frisbii/payment/reepay_checkout')) {
             $json['error']['warning'] = $this->language->get('error_permission');
         } else {
+            // Fix #2: invalidate cached webhook secret when the API key changes
+            $old_live = trim((string)$this->config->get('payment_reepay_checkout_private_key_live'));
+            $old_test = trim((string)$this->config->get('payment_reepay_checkout_private_key_test'));
+            $new_live = trim((string)($this->request->post['payment_reepay_checkout_private_key_live'] ?? ''));
+            $new_test = trim((string)($this->request->post['payment_reepay_checkout_private_key_test'] ?? ''));
+
+            if ($old_live !== $new_live || $old_test !== $new_test) {
+                $this->db->query(
+                    "DELETE FROM `" . DB_PREFIX . "setting`
+                     WHERE `key` IN (
+                         'payment_reepay_checkout_webhook_secret',
+                         'payment_reepay_checkout_webhook_secret_cached_at'
+                     ) AND store_id = '0'"
+                );
+            }
+
             $this->load->model('setting/setting');
             $this->model_setting_setting->editSetting('payment_reepay_checkout', $this->request->post);
             $json['success'] = $this->language->get('text_success');
