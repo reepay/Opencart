@@ -65,12 +65,60 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         }
 
         if (strstr($this->request->get['invoice'], '-')) {
-            $this->updatePaymentCustomField(json_encode(['invoice_id' => $this->request->get['invoice']]), $order_id);
+            $this->model_extension_frisbii_payment_reepay_checkout->mergePaymentField((int)$order_id, ['invoice_id' => $this->request->get['invoice']]);
         }
 
         $this->model_checkout_order->addHistory($order_info['order_id'], (int)$this->config->get('payment_reepay_checkout_order_status_id'));
 
         $this->response->redirect($this->url->link('checkout/success', '', true));
+    }
+
+    public function webhook(): void {
+        // Fix #3: reject non-POST
+        if (($this->request->server['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->response->addHeader('HTTP/1.1 400 Bad Request');
+            $this->response->setOutput('Bad Request');
+            return;
+        }
+
+        $raw = file_get_contents('php://input');
+
+        // Fix #1: empty body → 400
+        if (empty($raw)) {
+            $this->response->addHeader('HTTP/1.1 400 Bad Request');
+            $this->response->setOutput('Bad Request');
+            return;
+        }
+
+        $payload = json_decode($raw, true);
+
+        // Fix #1: malformed JSON or missing required fields → 400
+        if (!is_array($payload)
+            || empty($payload['timestamp'])
+            || empty($payload['id'])
+            || empty($payload['signature'])
+            || empty($payload['event_type'])
+            || !isset($payload['invoice'])
+        ) {
+            $this->response->addHeader('HTTP/1.1 400 Bad Request');
+            $this->response->setOutput('Bad Request');
+            return;
+        }
+
+        $this->load->model('extension/frisbii/payment/reepay_checkout');
+
+        // Fix #1: bad/unverifiable signature → 401
+        if (!$this->model_extension_frisbii_payment_reepay_checkout->verifyWebhookSignature($payload)) {
+            $this->model_extension_frisbii_payment_reepay_checkout->log('Frisbii webhook: signature verification failed, rejecting payload');
+            $this->response->addHeader('HTTP/1.1 401 Unauthorized');
+            $this->response->setOutput('Unauthorized');
+            return;
+        }
+
+        $this->response->addHeader('HTTP/1.1 200 OK');
+        $this->response->setOutput('OK');
+
+        $this->model_extension_frisbii_payment_reepay_checkout->processWebhook($payload);
     }
 
     public function cancel(): void {

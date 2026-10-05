@@ -13,6 +13,7 @@ $_['text_title_reepay_vipps']       = 'Frisbii Payments Vipps';
 $_['text_title_reepay_klarna_pay_later'] = 'Frisbii Payments Klarna Pay Later';
 $_['text_title_reepay_klarna_pay_now']   = 'Frisbii Payments Klarna Pay Now';
 $_['text_title_reepay_klarna_slice_it']  = 'Frisbii Payments Klarna Slice It';
+$_['text_title_reepay_klarna']           = 'Frisbii Payments Klarna';
 
 // Checkout template
 $_['button_confirm'] = 'Confirm Order';
