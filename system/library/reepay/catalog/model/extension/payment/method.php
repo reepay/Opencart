@@ -37,9 +37,13 @@ trait Method {
             'name' => $method_title,
         ];
 
+        $img_style = 'height:25px;width:auto;vertical-align:middle;border-radius:4px;border:1px solid #f0f0f0;margin-right:8px;';
+        $img_src   = 'extension/frisbii/image/reepay/' . $this->payment_method . '.png';
+        $name_with_logo = '<img src="' . $img_src . '" style="' . $img_style . '" alt="' . htmlspecialchars($method_title) . '"/>' . $method_title;
+
         return [
             'code'       => $this->payment_method,
-            'name'       => $method_title,
+            'name'       => $name_with_logo,
             'option'     => $option_data,
             'sort_order' => $this->config->get('payment_reepay_checkout_sort_order'),
         ];
