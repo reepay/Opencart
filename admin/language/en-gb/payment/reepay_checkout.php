@@ -50,3 +50,11 @@ $_['th_type']             = 'Type';
 $_['th_state']            = 'State';
 $_['th_amount']           = 'Amount';
 $_['th_transaction_id']   = 'Transaction id';
+
+// Webhook
+$_['text_webhook_url']              = 'Webhook URL';
+$_['text_webhook_url_help']         = 'Copy this URL into your Frisbii dashboard under Webhooks.';
+$_['entry_order_status_authorized'] = 'Order Status — Authorized';
+$_['entry_order_status_settled']    = 'Order Status — Settled';
+$_['entry_order_status_cancelled']  = 'Order Status — Cancelled';
+$_['entry_order_status_refunded']   = 'Order Status — Refunded';
