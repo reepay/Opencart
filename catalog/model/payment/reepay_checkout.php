@@ -424,8 +424,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
     }
 
     public function processWebhook(array $payload): void {
-        $event_type = $payload['invoice']['state'] ?? '';
-        $raw_event  = $payload['event_type'] ?? '';
+        $raw_event = $payload['event_type'] ?? '';
 
         switch ($raw_event) {
             case 'invoice_authorized':
@@ -572,24 +571,24 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
                 $status_id = (int)$this->config->get('payment_reepay_checkout_order_status_id');
             }
 
-            $refunded_amount = $payload['credit_note']['amount'] ?? 0;
-            $currency        = $payload['invoice']['currency'] ?? '';
-            $amount_str      = number_format($refunded_amount / 100, 2) . ($currency ? ' ' . strtoupper($currency) : '');
-            $note            = 'Refund processed via Frisbii webhook. Amount: ' . $amount_str;
+            // invoice and credit_note are string handles in the webhook payload;
+            // amount/currency require a separate API call so are omitted from the note.
+            $credit_note_handle = (string)($payload['credit_note'] ?? '');
+            $note = 'Refund processed via Frisbii webhook.' . ($credit_note_handle ? ' Credit note: ' . $credit_note_handle : '');
 
             $this->load->model('checkout/order');
             $this->model_checkout_order->addHistory($order_id, $status_id, $note, false);
             $this->markWebhookEventProcessed($order_id, $event_id);
-            $this->log('Frisbii webhook invoice_refund: order ' . $order_id . ' → status ' . $status_id . ', amount ' . $amount_str);
+            $this->log('Frisbii webhook invoice_refund: order ' . $order_id . ' → status ' . $status_id);
         } finally {
             $this->releaseOrderLock($order_id);
         }
     }
 
     private function extractOrderId(array $payload): int {
-        $handle = $payload['invoice']['handle'] ?? '';
-        // Handle format is either "ORDER_ID" or "ORDER_ID-TIMESTAMP"
-        $parts = explode('-', $handle);
+        // Frisbii sends invoice as a string handle, not an object
+        $handle = (string)($payload['invoice'] ?? '');
+        $parts  = explode('-', $handle);
         return (int)($parts[0] ?? 0);
     }
 
@@ -605,6 +604,19 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         $lock_name = 'frisbii_order_' . $order_id;
         $this->db->query(
             "SELECT RELEASE_LOCK('" . $this->db->escape($lock_name) . "')"
+        );
+    }
+
+    public function mergePaymentField(int $order_id, array $data): void {
+        $result = $this->db->query(
+            "SELECT `payment_custom_field` FROM `" . DB_PREFIX . "order` WHERE order_id = '" . (int)$order_id . "'"
+        );
+        $field = json_decode($result->row['payment_custom_field'] ?? '{}', true) ?: [];
+        $field = array_merge($field, $data);
+        $this->db->query(
+            "UPDATE `" . DB_PREFIX . "order`
+             SET `payment_custom_field` = '" . $this->db->escape(json_encode($field)) . "'
+             WHERE order_id = '" . (int)$order_id . "'"
         );
     }
 

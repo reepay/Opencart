@@ -65,7 +65,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         }
 
         if (strstr($this->request->get['invoice'], '-')) {
-            $this->updatePaymentCustomField(json_encode(['invoice_id' => $this->request->get['invoice']]), $order_id);
+            $this->model_extension_frisbii_payment_reepay_checkout->mergePaymentField((int)$order_id, ['invoice_id' => $this->request->get['invoice']]);
         }
 
         $this->model_checkout_order->addHistory($order_info['order_id'], (int)$this->config->get('payment_reepay_checkout_order_status_id'));
@@ -119,25 +119,6 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         $this->response->setOutput('OK');
 
         $this->model_extension_frisbii_payment_reepay_checkout->processWebhook($payload);
-    }
-
-    public function testWebhookStatus(): void {
-        $this->load->model('extension/frisbii/payment/reepay_checkout');
-        $secret = $this->model_extension_frisbii_payment_reepay_checkout->getWebhookSecret();
-
-        $scheme      = (!empty($this->request->server['HTTPS']) && $this->request->server['HTTPS'] !== 'off') ? 'https' : 'http';
-        $host        = $this->request->server['HTTP_HOST'];
-        $webhook_url = $scheme . '://' . $host . '/index.php?route=extension/frisbii/payment/reepay_checkout.webhook';
-
-        $this->response->addHeader('Content-Type: application/json');
-        $this->response->setOutput(json_encode([
-            'status'         => 'ok',
-            'webhook_url'    => $webhook_url,
-            'secret_found'   => !empty($secret),
-            'secret_prefix'  => $secret ? substr($secret, 0, 8) . '...' : null,
-            'time'           => date('Y-m-d H:i:s'),
-            'note'           => 'POST to webhook_url with a valid signed payload to trigger processing',
-        ]));
     }
 
     public function cancel(): void {
