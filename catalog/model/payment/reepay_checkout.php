@@ -37,10 +37,15 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         $method_title_settings = $this->config->get('payment_reepay_checkout_method_title');
         $method_title = (strlen((string)$method_title_settings) > 3) ? $method_title_settings : $this->language->get('text_title');
 
-        $terms = '';
         $logo_array = $this->config->get('payment_reepay_checkout_payment_logos');
+        $terms      = is_array($logo_array) ? $this->getLogos($logo_array) : '';
+
+        $logos_html = '';
         if (is_array($logo_array)) {
-            $terms = $this->getLogos($logo_array);
+            $img_style = 'height:25px;width:auto;vertical-align:middle;border-radius:4px;border:1px solid #f0f0f0;margin-right:4px;';
+            foreach ($logo_array as $logo) {
+                $logos_html .= '<img src="extension/frisbii/image/reepay/reepay_' . $logo . '.png" style="' . $img_style . '" alt="' . htmlspecialchars($logo) . '"/>';
+            }
         }
 
         $option_data['reepay_checkout'] = [
@@ -50,7 +55,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
 
         return [
             'code'       => 'reepay_checkout',
-            'name'       => $method_title,
+            'name'       => $logos_html . $method_title,
             'option'     => $option_data,
             'sort_order' => $this->config->get('payment_reepay_checkout_sort_order'),
             'terms'      => $terms,

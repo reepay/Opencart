@@ -90,6 +90,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
             'paypal'           => 'PayPal',
             'applepay'         => 'Apple Pay',
             'googlepay'        => 'Google Pay',
+            'klarna'           => 'Klarna',
             'klarna_pay_later' => 'Klarna Pay Later',
             'klarna_pay_now'   => 'Klarna Pay Now',
             'klarna_slice_it'  => 'Klarna Slice It!',
