@@ -98,6 +98,21 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
             $payment_methods[] = substr($base_code, 7);
         }
 
+        $click_to_pay_triggers = ['card', 'visa', 'mc'];
+        if (
+            !in_array('click_to_pay', $payment_methods, true) &&
+            array_intersect($click_to_pay_triggers, $payment_methods)
+        ) {
+            $payment_methods[] = 'click_to_pay';
+        }
+
+        $triggers_found = array_values(array_intersect($click_to_pay_triggers, $payment_methods));
+        if ($triggers_found) {
+            $this->log('Frisbii: click_to_pay appended to payment_methods. Trigger(s): ' . implode(', ', $triggers_found) . '. Final: ' . json_encode(array_values($payment_methods)));
+        } else {
+            $this->log('Frisbii: click_to_pay not added (no supported card method in payload). Methods: ' . json_encode(array_values($payment_methods)));
+        }
+
         // Prefer payment address; fall back to shipping; last resort: session shipping_address.
         $use_shipping = empty($order_info['payment_country_id']);
         $addr_firstname  = $use_shipping ? $order_info['shipping_firstname']  : $order_info['payment_firstname'];
