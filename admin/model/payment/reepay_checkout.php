@@ -9,17 +9,17 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
     const REFUND_URL       = 'https://api.frisbii.com/v1/refund';
 
     public function getInvoice(string $invoice_handle): string|false {
-        return $this->sendCurl(self::GET_INVOICE_URL . $invoice_handle);
+        return $this->sendCurl(self::GET_INVOICE_URL . rawurlencode($invoice_handle));
     }
 
     public function settleCharge(string $invoice_handle, string|float $amount): string|false {
         $amount = $this->prepareAmount($amount);
-        return $this->sendCurl(self::SETTLE_URL . $invoice_handle . '/settle', ['amount' => $amount]);
+        return $this->sendCurl(self::SETTLE_URL . rawurlencode($invoice_handle) . '/settle', ['amount' => $amount]);
     }
 
     public function voidCharge(string $invoice_handle, string|float $amount): string|false {
         $amount = $this->prepareAmount($amount);
-        return $this->sendCurl(self::SETTLE_URL . $invoice_handle . '/cancel', ['amount' => $amount]);
+        return $this->sendCurl(self::SETTLE_URL . rawurlencode($invoice_handle) . '/cancel', ['amount' => $amount]);
     }
 
     public function refundCharge(string $invoice_handle, string|float $amount): string|false {
@@ -33,7 +33,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         curl_setopt_array($ch, [
             CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_TIMEOUT        => 60,
         ]);
 
@@ -75,6 +75,12 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
             $result = json_encode(['status' => 'success', 'body' => $response_arr]);
         } else {
             $curl_error = curl_error($ch);
+            if ($curl_error !== '') {
+                // Connection-level failure (e.g. TLS certificate could not be verified).
+                // Written even when the debug setting is off.
+                $log = new \Opencart\System\Library\Log('reepay_checkout.log');
+                $log->write('cURL error calling Frisbii API: ' . $curl_error);
+            }
             $result = json_encode(['status' => 'failure', 'error' => $response . $curl_error]);
         }
 

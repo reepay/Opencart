@@ -35,6 +35,31 @@ With this extension, you can:
 - PHP >= 8.1
 - A Frisbii merchant account — sign up at [frisbii.com](https://frisbii.com)
 - cURL enabled in PHP
+- A CA certificate bundle available to PHP (see [TLS / CA certificates](#tls--ca-certificates))
+
+## TLS / CA certificates
+
+The extension verifies the TLS certificate of the Frisbii API on every request. This protects your private API key and the payment status returned by Frisbii, and it cannot be switched off.
+
+Most hosts already provide a CA certificate bundle, and no action is needed. If PHP has no bundle, all API calls fail and `reepay_checkout.log` (in the OpenCart `storage/logs` folder) contains a line like:
+
+```
+cURL error calling Frisbii API: SSL certificate problem: unable to get local issuer certificate
+```
+
+To fix it:
+
+1. Download the current bundle `cacert.pem` from [curl.se/docs/caextract.html](https://curl.se/docs/caextract.html), or ask your hosting provider for the path of the system bundle.
+2. Point PHP to the file in `php.ini`:
+
+   ```ini
+   curl.cainfo = "/path/to/cacert.pem"
+   openssl.cafile = "/path/to/cacert.pem"
+   ```
+
+3. Restart the web server / PHP-FPM.
+
+Keep the bundle up to date. Do not work around the error by disabling certificate verification.
 
 ## Support
 
