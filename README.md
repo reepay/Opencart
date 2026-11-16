@@ -1,7 +1,7 @@
 # Frisbii Opencart
 Payment Plugin for Opencart of version 4
 
-Latest version: 1.2
+Latest version: 1.3
 
 Frisbii Payments for OpenCart connects your store to the Frisbii payment platform, giving your customers a seamless checkout experience with support for cards, MobilePay, ViaBill, Klarna, and many more local and international payment methods.
 
@@ -35,12 +35,42 @@ With this extension, you can:
 - PHP >= 8.1
 - A Frisbii merchant account — sign up at [frisbii.com](https://frisbii.com)
 - cURL enabled in PHP
+- A CA certificate bundle available to PHP (see [TLS / CA certificates](#tls--ca-certificates))
+
+## TLS / CA certificates
+
+The extension verifies the TLS certificate of the Frisbii API on every request. This protects your private API key and the payment status returned by Frisbii, and it cannot be switched off.
+
+Most hosts already provide a CA certificate bundle, and no action is needed. If PHP has no bundle, all API calls fail and `reepay_checkout.log` (in the OpenCart `storage/logs` folder) contains a line like:
+
+```
+cURL error calling Frisbii API: SSL certificate problem: unable to get local issuer certificate
+```
+
+To fix it:
+
+1. Download the current bundle `cacert.pem` from [curl.se/docs/caextract.html](https://curl.se/docs/caextract.html), or ask your hosting provider for the path of the system bundle.
+2. Point PHP to the file in `php.ini`:
+
+   ```ini
+   curl.cainfo = "/path/to/cacert.pem"
+   openssl.cafile = "/path/to/cacert.pem"
+   ```
+
+3. Restart the web server / PHP-FPM.
+
+Keep the bundle up to date. Do not work around the error by disabling certificate verification.
 
 ## Support
 
 You can create issues on our repository. In case of specific problems with your account, please contact [support@frisbii.com](mailto:support@frisbii.com)
 
 ## Changelog
+
+### v 1.3
+
+- [Fix] - Payment improvements.
+- [Feature] - Supports Visa & Mastercard Click-to-pay.
 
 ### v 1.2
 

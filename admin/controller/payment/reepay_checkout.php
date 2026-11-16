@@ -144,15 +144,21 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
 
     public function order(): string {
         $data['user_token'] = $this->session->data['user_token'];
-        $data['order_id']   = $this->request->get['order_id'];
+        // Always an integer: this value is printed into the admin order view.
+        $order_id         = (int)($this->request->get['order_id'] ?? 0);
+        $data['order_id'] = $order_id;
 
-        $res    = $this->getOrderPaymentCustomField($this->request->get['order_id']);
+        $res    = $this->getOrderPaymentCustomField((string)$order_id);
         $result = isset($res->row['payment_custom_field'])
             ? json_decode($res->row['payment_custom_field'], true)
             : null;
 
-        if ($result && isset($result['invoice_id']) && $result['invoice_id']) {
-            $data['order_id'] = $result['invoice_id'];
+        // A stored invoice handle is only trusted when it is "<order_id>-<timestamp>" for this
+        // very order; anything else (e.g. a value stored before input validation existed) is ignored.
+        $invoice_id = is_array($result) && is_string($result['invoice_id'] ?? null) ? $result['invoice_id'] : '';
+
+        if ($this->isValidHandle($invoice_id) && (int)$invoice_id === $order_id) {
+            $data['order_id'] = $invoice_id;
         }
 
         return $this->load->view('extension/frisbii/payment/reepay_checkout_order', $data);
@@ -162,7 +168,13 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         $this->load->language('extension/frisbii/payment/reepay_checkout');
         $this->load->model('extension/frisbii/payment/reepay_checkout');
 
-        $result         = $this->model_extension_frisbii_payment_reepay_checkout->getInvoice($this->request->get['order_id']);
+        $handle = (string)($this->request->get['order_id'] ?? '');
+
+        if (!$this->isValidHandle($handle)) {
+            return;
+        }
+
+        $result         = $this->model_extension_frisbii_payment_reepay_checkout->getInvoice($handle);
         $result_decoded = json_decode($result, true);
 
         if ('success' !== ($result_decoded['status'] ?? '')) {
@@ -191,12 +203,14 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         $data['settled_amount']    = $this->formatAmount($data['settled_amount']);
         $data['refunded_amount']   = $this->formatAmount($data['refunded_amount']);
         $data['user_token']        = $this->session->data['user_token'];
-        $data['order_id']          = $this->request->get['order_id'];
+        $data['order_id']          = $handle;
 
         $payment_type = $data['transactions'][0]['payment_type'] ?? '';
         $data['payment_type'] = $payment_type;
 
-        $data['card_type']   = $data['transactions'][0][$payment_type . '_transaction']['card_type']   ?? null;
+        // card_type becomes part of an image file name, so only a plain identifier is allowed.
+        $card_type = $data['transactions'][0][$payment_type . '_transaction']['card_type'] ?? null;
+        $data['card_type'] = is_string($card_type) && preg_match('/^[a-z0-9_]+$/', $card_type) ? $card_type : null;
         $data['exp_date']    = $data['transactions'][0][$payment_type . '_transaction']['exp_date']    ?? null;
         $data['masked_card'] = $data['transactions'][0][$payment_type . '_transaction']['masked_card'] ?? null;
 
@@ -204,29 +218,85 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
     }
 
     public function charge_settle(): void {
+        $handle = $this->getPostedHandle();
+        if (null === $handle) {
+            return;
+        }
+
         $this->load->model('extension/frisbii/payment/reepay_checkout');
         $this->response->setOutput(
-            $this->model_extension_frisbii_payment_reepay_checkout->settleCharge($this->request->post['handle'], $this->request->post['amount'])
+            $this->model_extension_frisbii_payment_reepay_checkout->settleCharge($handle, $this->request->post['amount'])
         );
     }
 
     public function void_charge(): void {
+        $handle = $this->getPostedHandle();
+        if (null === $handle) {
+            return;
+        }
+
         $this->load->model('extension/frisbii/payment/reepay_checkout');
         $this->response->setOutput(
-            $this->model_extension_frisbii_payment_reepay_checkout->voidCharge($this->request->post['handle'], $this->request->post['amount'])
+            $this->model_extension_frisbii_payment_reepay_checkout->voidCharge($handle, $this->request->post['amount'])
         );
     }
 
     public function refund_charge(): void {
+        $handle = $this->getPostedHandle();
+        if (null === $handle) {
+            return;
+        }
+
         $this->load->model('extension/frisbii/payment/reepay_checkout');
         $this->response->setOutput(
-            $this->model_extension_frisbii_payment_reepay_checkout->refundCharge($this->request->post['handle'], $this->request->post['amount'])
+            $this->model_extension_frisbii_payment_reepay_checkout->refundCharge($handle, $this->request->post['amount'])
         );
     }
 
-    public function install(): void {}
+    /**
+     * Invoice handles are always "<order_id>" or "<order_id>-<timestamp>"
+     * (see generateRequestParams() in the catalog model).
+     */
+    protected function isValidHandle(string $handle): bool {
+        return 1 === preg_match('/^\d+(?:-\d+)?$/', $handle);
+    }
 
-    public function uninstall(): void {}
+    /**
+     * Returns the posted invoice handle, or null after writing a failure response
+     * (same JSON shape as the model's sendCurl()) when it is missing or malformed.
+     */
+    protected function getPostedHandle(): ?string {
+        $handle = $this->request->post['handle'] ?? '';
+
+        if (is_string($handle) && $this->isValidHandle($handle)) {
+            return $handle;
+        }
+
+        $this->response->setOutput(json_encode(['status' => 'failure', 'error' => 'Invalid invoice handle']));
+
+        return null;
+    }
+
+    public function install(): void {
+        // Processed webhook ids, shop-wide, so a webhook id cannot be replayed against another order.
+        // Same definition as ensureWebhookEventTable() in the catalog model, which creates the
+        // table on demand for shops that are upgraded without reinstalling the extension.
+        $this->db->query(
+            "CREATE TABLE IF NOT EXISTS `" . DB_PREFIX . "frisbii_webhook_event` (
+                `event_hash` char(64) NOT NULL,
+                `event_id` varchar(255) NOT NULL,
+                `event_type` varchar(64) NOT NULL,
+                `order_id` int(11) NOT NULL,
+                `date_added` datetime NOT NULL,
+                PRIMARY KEY (`event_hash`),
+                KEY `date_added` (`date_added`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
+        );
+    }
+
+    public function uninstall(): void {
+        $this->db->query("DROP TABLE IF EXISTS `" . DB_PREFIX . "frisbii_webhook_event`");
+    }
 
     protected function getOrderPaymentCustomField(string $order_id): object {
         return $this->db->query("SELECT `payment_custom_field` FROM `" . DB_PREFIX . "order` WHERE order_id = '" . (int)$order_id . "'");

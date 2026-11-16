@@ -35,13 +35,16 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
     }
 
     public function accept(): void {
-        $invoice_id_arr = explode('-', $this->request->get['invoice'] ?? '');
-        $order_id       = $invoice_id_arr[0] ?? null;
+        $invoice = (string)($this->request->get['invoice'] ?? '');
 
-        if (!isset($order_id)) {
+        // Handle must be exactly "<order_id>" or "<order_id>-<timestamp>" (see getChargeSession()),
+        // so it can never carry path-traversal or other characters into the API URL.
+        if (!preg_match('/^(\d+)(?:-\d+)?$/', $invoice, $invoice_match)) {
             $this->response->redirect($this->url->link('checkout/checkout', '', true));
             return;
         }
+
+        $order_id = (int)$invoice_match[1];
 
         $this->load->model('checkout/order');
         $order_info = $this->model_checkout_order->getOrder($order_id);
@@ -52,10 +55,25 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         }
 
         $this->load->model('extension/frisbii/payment/reepay_checkout');
-        $result = $this->model_extension_frisbii_payment_reepay_checkout->getInvoice($this->request->get['invoice']);
+        $result = $this->model_extension_frisbii_payment_reepay_checkout->getInvoice($invoice);
 
-        if ('success' == $result['status']) {
-            if (!in_array($result['body']['state'], ['authorized', 'settled'])) {
+        if ('success' == ($result['status'] ?? null)) {
+            // The handle returned by the API must be the exact handle we asked for, so a
+            // settled invoice for a different order can never confirm this order.
+            if (($result['body']['handle'] ?? null) !== $invoice) {
+                $this->response->redirect($this->url->link('checkout/checkout', '', true));
+                return;
+            }
+
+            if (!in_array($result['body']['state'] ?? null, ['authorized', 'settled'])) {
+                $this->response->redirect($this->url->link('checkout/checkout', '', true));
+                return;
+            }
+
+            // The invoice must have been paid for exactly what the order costs now: the order
+            // can be edited (cart changed, checkout re-confirmed) while an older, cheaper
+            // payment session for the same handle is still payable.
+            if (!$this->model_extension_frisbii_payment_reepay_checkout->invoiceMatchesOrder($order_info, $result['body'])) {
                 $this->response->redirect($this->url->link('checkout/checkout', '', true));
                 return;
             }
@@ -64,8 +82,8 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
             return;
         }
 
-        if (strstr($this->request->get['invoice'], '-')) {
-            $this->model_extension_frisbii_payment_reepay_checkout->mergePaymentField((int)$order_id, ['invoice_id' => $this->request->get['invoice']]);
+        if (strstr($invoice, '-')) {
+            $this->model_extension_frisbii_payment_reepay_checkout->mergePaymentField($order_id, ['invoice_id' => $invoice]);
         }
 
         $this->model_checkout_order->addHistory($order_info['order_id'], (int)$this->config->get('payment_reepay_checkout_order_status_id'));
@@ -92,13 +110,14 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
 
         $payload = json_decode($raw, true);
 
-        // Fix #1: malformed JSON or missing required fields → 400
+        // Fix #1: malformed JSON or missing/mistyped required fields → 400.
+        // `invoice` is not required here: events without an invoice are of an unhandled type and
+        // are answered with 200 below; the invoice handlers validate the handle themselves.
         if (!is_array($payload)
-            || empty($payload['timestamp'])
-            || empty($payload['id'])
-            || empty($payload['signature'])
-            || empty($payload['event_type'])
-            || !isset($payload['invoice'])
+            || empty($payload['timestamp']) || !(is_string($payload['timestamp']) || is_int($payload['timestamp']))
+            || empty($payload['id']) || !(is_string($payload['id']) || is_int($payload['id']))
+            || empty($payload['signature']) || !is_string($payload['signature'])
+            || empty($payload['event_type']) || !is_string($payload['event_type'])
         ) {
             $this->response->addHeader('HTTP/1.1 400 Bad Request');
             $this->response->setOutput('Bad Request');
@@ -106,19 +125,31 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         }
 
         $this->load->model('extension/frisbii/payment/reepay_checkout');
+        $model = $this->model_extension_frisbii_payment_reepay_checkout;
 
-        // Fix #1: bad/unverifiable signature → 401
-        if (!$this->model_extension_frisbii_payment_reepay_checkout->verifyWebhookSignature($payload)) {
-            $this->model_extension_frisbii_payment_reepay_checkout->log('Frisbii webhook: signature verification failed, rejecting payload');
+        // Fix #1: bad/unverifiable signature or timestamp outside the window → 401 (logged by the model)
+        if (!$model->verifyWebhookSignature($payload)) {
             $this->response->addHeader('HTTP/1.1 401 Unauthorized');
             $this->response->setOutput('Unauthorized');
             return;
         }
 
+        // Process first, answer afterwards: the status code depends on the outcome.
+        // 200 = applied, duplicate, unhandled type or definitively rejected by the API check.
+        // 503 = could not be decided right now (invoice lookup failed, order lock not acquired);
+        //       nothing was changed or stored, and Frisbii delivers the webhook again.
+        $outcome = $model->processWebhook($payload);
+
+        // ($model is an OpenCart proxy object, so the constant is read from the model class itself.)
+        if ($outcome === \Opencart\Catalog\Model\Extension\Frisbii\Payment\ReepayCheckout::WEBHOOK_RETRY) {
+            $this->response->addHeader('HTTP/1.1 503 Service Unavailable');
+            $this->response->addHeader('Retry-After: 120');
+            $this->response->setOutput('Service Unavailable');
+            return;
+        }
+
         $this->response->addHeader('HTTP/1.1 200 OK');
         $this->response->setOutput('OK');
-
-        $this->model_extension_frisbii_payment_reepay_checkout->processWebhook($payload);
     }
 
     public function cancel(): void {

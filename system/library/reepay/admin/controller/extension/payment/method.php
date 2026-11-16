@@ -75,7 +75,7 @@ trait Method {
 
     public function order(): string {
         $data['user_token'] = $this->session->data['user_token'];
-        $data['order_id']   = $this->request->get['order_id'];
+        $data['order_id']   = (int)($this->request->get['order_id'] ?? 0);
 
         return $this->load->view('extension/frisbii/payment/reepay_checkout_order', $data);
     }

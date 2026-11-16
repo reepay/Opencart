@@ -8,6 +8,30 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
     const GET_INVOICE_URL       = 'https://api.frisbii.com/v1/invoice/';
     const WEBHOOK_SETTINGS_URL  = 'https://api.frisbii.com/v1/account/webhook_settings';
     const WEBHOOK_SECRET_TTL    = 600; // 10 minutes in seconds
+    // Oldest webhook timestamp that is accepted, in seconds (4 days). Frisbii retries a failed
+    // delivery after 2, 5, 10, 20 and 30 minutes and then every hour for three days, and a retry
+    // carries the original timestamp. The window has to cover that whole period, otherwise an event
+    // answered with 503 (or missed during an outage) could not be recovered after the window passed.
+    // The wide window does not let a replayed webhook force a false state: every event is confirmed
+    // against the invoice in the API, and its id is remembered shop-wide for WEBHOOK_EVENT_KEEP_DAYS,
+    // which must stay longer than this window (see processWebhook() and handleInvoiceEvent()).
+    const WEBHOOK_MAX_AGE       = 345600;
+    // How far in the future a webhook timestamp may be, in seconds; allows for clock differences only.
+    const WEBHOOK_MAX_FUTURE    = 3600;
+    const WEBHOOK_EVENT_KEEP_DAYS = 30; // how long processed webhook ids are remembered
+
+    // Outcome of processWebhook(); the controller turns it into the HTTP status.
+    const WEBHOOK_PROCESSED = 'processed'; // order was updated                         -> 200
+    const WEBHOOK_IGNORED   = 'ignored';   // duplicate, unhandled type or rejected     -> 200
+    const WEBHOOK_RETRY     = 'retry';     // could not be decided now, Frisbii retries -> 503
+
+    // Result of confirming a webhook against the invoice in the Frisbii API.
+    private const INVOICE_CONFIRMED     = 'confirmed';
+    private const INVOICE_REJECTED      = 'rejected';
+    private const INVOICE_LOOKUP_FAILED = 'lookup_failed';
+
+    private bool $webhook_event_table_checked = false;
+    private int $webhook_changed_order_id = 0; // order changed by the webhook being handled, 0 = none
 
     public function getMethods(array $address = []): array {
         $this->load->language('extension/frisbii/payment/reepay_checkout');
@@ -44,7 +68,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         if (is_array($logo_array)) {
             $img_style = 'height:25px;width:auto;vertical-align:middle;border-radius:4px;border:1px solid #f0f0f0;margin-right:4px;';
             foreach ($logo_array as $logo) {
-                $logos_html .= '<img src="extension/frisbii/image/reepay/reepay_' . $logo . '.png" style="' . $img_style . '" alt="' . htmlspecialchars($logo) . '"/>';
+                $logos_html .= '<img src="extension/frisbii/image/reepay/reepay_' . htmlspecialchars($logo, ENT_QUOTES, 'UTF-8') . '.png" style="' . $img_style . '" alt="' . htmlspecialchars($logo, ENT_QUOTES, 'UTF-8') . '"/>';
             }
         }
 
@@ -96,6 +120,21 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
             $payment_methods = $this->config->get('payment_reepay_checkout_payment_methods') ?? [];
         } else {
             $payment_methods[] = substr($base_code, 7);
+        }
+
+        $click_to_pay_triggers = ['card', 'visa', 'mc'];
+        if (
+            !in_array('click_to_pay', $payment_methods, true) &&
+            array_intersect($click_to_pay_triggers, $payment_methods)
+        ) {
+            $payment_methods[] = 'click_to_pay';
+        }
+
+        $triggers_found = array_values(array_intersect($click_to_pay_triggers, $payment_methods));
+        if ($triggers_found) {
+            $this->log('Frisbii: click_to_pay appended to payment_methods. Trigger(s): ' . implode(', ', $triggers_found) . '. Final: ' . json_encode(array_values($payment_methods)));
+        } else {
+            $this->log('Frisbii: click_to_pay not added (no supported card method in payload). Methods: ' . json_encode(array_values($payment_methods)));
         }
 
         // Prefer payment address; fall back to shipping; last resort: session shipping_address.
@@ -225,7 +264,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         curl_setopt_array($ch, [
             CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_TIMEOUT        => 60,
         ]);
 
@@ -235,7 +274,10 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         ];
 
         $this->log('Request to server: ' . $url);
-        $this->log($params);
+        $safe_params = $params;
+        if (isset($safe_params['order']['customer']))        $safe_params['order']['customer']         = '[redacted]';
+        if (isset($safe_params['order']['billing_address'])) $safe_params['order']['billing_address']  = '[redacted]';
+        $this->log($safe_params);
 
         $key = $this->config->get('payment_reepay_checkout_test')
             ? trim($this->config->get('payment_reepay_checkout_private_key_test'))
@@ -269,6 +311,10 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
             $result = json_encode(['status' => 'success', 'body' => $response_arr]);
         } else {
             $curl_error = curl_error($ch);
+            if ($curl_error !== '') {
+                // Connection-level failure (e.g. TLS certificate could not be verified).
+                $this->logAlways('cURL error calling Frisbii API: ' . $curl_error);
+            }
             $result = json_encode(['status' => 'failure', 'error' => $response . $curl_error]);
         }
 
@@ -323,8 +369,104 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
     }
 
     public function getInvoice(string $invoiceId): array {
-        $url = self::GET_INVOICE_URL . $invoiceId;
+        // Defense in depth: the handle is already validated by the caller, but encode it
+        // anyway so it can never be (mis)used to alter the request path sent to the API.
+        $url = self::GET_INVOICE_URL . rawurlencode($invoiceId);
         return json_decode($this->sendCurl($url, [], false), true);
+    }
+
+    /**
+     * True only when the invoice was issued for exactly what the order costs right now:
+     * same amount in minor units (same calculation as generateRequestParams()) and same currency.
+     * Fails closed when either side is missing or unreadable. Every rejection is logged,
+     * regardless of the debug setting.
+     */
+    public function invoiceMatchesOrder(array $order_info, mixed $invoice): bool {
+        $order_id          = (int)($order_info['order_id'] ?? 0);
+        $expected_currency = (string)($order_info['currency_code'] ?? '');
+        $expected_amount   = null;
+
+        if ($order_id && $expected_currency !== '' && isset($order_info['total'])) {
+            // Currency::format() returns '' for a currency the store does not know.
+            $formatted = $this->currency->format((float)$order_info['total'], $expected_currency, (float)($order_info['currency_value'] ?? 0), false);
+
+            if (is_numeric($formatted)) {
+                $expected_amount = $this->prepareAmount($formatted);
+            }
+        }
+
+        $actual_amount   = is_array($invoice) ? ($invoice['amount'] ?? null) : null;
+        $actual_currency = is_array($invoice) ? ($invoice['currency'] ?? null) : null;
+
+        $amount_ok = $expected_amount !== null
+            && (is_int($actual_amount) || (is_string($actual_amount) && ctype_digit($actual_amount)))
+            && (int)$actual_amount === $expected_amount;
+
+        $currency_ok = is_string($actual_currency)
+            && $actual_currency !== ''
+            && strtoupper($actual_currency) === strtoupper($expected_currency);
+
+        if ($amount_ok && $currency_ok) {
+            return true;
+        }
+
+        $this->logAlways(sprintf(
+            'Frisbii: REJECTED payment confirmation for order %d (invoice handle "%s"): expected %s %s, invoice has %s %s',
+            $order_id,
+            is_array($invoice) && is_scalar($invoice['handle'] ?? null) ? (string)$invoice['handle'] : '',
+            $expected_amount === null ? 'n/a' : (string)$expected_amount,
+            $expected_currency === '' ? 'n/a' : $expected_currency,
+            is_scalar($actual_amount) ? (string)$actual_amount : 'n/a',
+            is_scalar($actual_currency) ? (string)$actual_currency : 'n/a'
+        ));
+
+        return false;
+    }
+
+    /**
+     * Webhook payloads only carry the invoice handle, and only timestamp + id are signed, so the
+     * event type and the handle can be forged on a replayed webhook. Before any webhook may change
+     * an order, the invoice is fetched from the API and must really be in the situation the event
+     * claims:
+     *   - the API returns exactly the handle that was asked for,
+     *   - its state is one of $allowed_states (skipped when the list is empty),
+     *   - it shows a refund when $require_refund is set,
+     *   - it matches the order's amount and currency when $check_amount is set.
+     *
+     * A failed lookup (cURL error, non-success status, undecodable body) is reported separately
+     * from a real mismatch, so the caller can ask Frisbii to retry instead of dropping the event.
+     */
+    private function confirmWebhookInvoice(array $order_info, string $handle, string $event, array $allowed_states, bool $check_amount, bool $require_refund): string {
+        $order_id = (int)$order_info['order_id'];
+        $result   = $this->getInvoice($handle);
+        $body     = is_array($result) ? ($result['body'] ?? null) : null;
+
+        if (!is_array($result) || ($result['status'] ?? null) !== 'success' || !is_array($body)) {
+            $this->logAlways('Frisbii webhook ' . $event . ': NOT PROCESSED, could not fetch invoice "' . $handle . '" for order ' . $order_id . ', asking Frisbii to retry');
+            return self::INVOICE_LOOKUP_FAILED;
+        }
+
+        if (($body['handle'] ?? null) !== $handle) {
+            $this->logAlways('Frisbii webhook ' . $event . ': REJECTED, API returned a different invoice than "' . $handle . '" for order ' . $order_id);
+            return self::INVOICE_REJECTED;
+        }
+
+        if ($allowed_states && !in_array($body['state'] ?? null, $allowed_states, true)) {
+            $this->logAlways('Frisbii webhook ' . $event . ': REJECTED, invoice "' . $handle . '" is in state "' . $this->logValue($body['state'] ?? null) . '" for order ' . $order_id);
+            return self::INVOICE_REJECTED;
+        }
+
+        if ($require_refund && (!is_int($body['refunded_amount'] ?? null) || $body['refunded_amount'] <= 0)) {
+            $this->logAlways('Frisbii webhook ' . $event . ': REJECTED, invoice "' . $handle . '" has no refund (refunded_amount "' . $this->logValue($body['refunded_amount'] ?? null) . '") for order ' . $order_id);
+            return self::INVOICE_REJECTED;
+        }
+
+        // invoiceMatchesOrder() writes its own rejection log line.
+        if ($check_amount && !$this->invoiceMatchesOrder($order_info, $body)) {
+            return self::INVOICE_REJECTED;
+        }
+
+        return self::INVOICE_CONFIRMED;
     }
 
     public function getWebhookSecret(): string|null {
@@ -382,19 +524,38 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
     }
 
     public function verifyWebhookSignature(array $payload): bool {
-        $timestamp = (string)($payload['timestamp'] ?? '');
-        $id        = (string)($payload['id'] ?? '');
-        $signature = (string)($payload['signature'] ?? '');
+        $timestamp = is_string($payload['timestamp'] ?? null) || is_int($payload['timestamp'] ?? null) ? (string)$payload['timestamp'] : '';
+        $id        = is_string($payload['id'] ?? null) || is_int($payload['id'] ?? null) ? (string)$payload['id'] : '';
+        $signature = is_string($payload['signature'] ?? null) ? $payload['signature'] : '';
+        $context   = ' (event type "' . $this->logValue($payload['event_type'] ?? null) . '", invoice "' . $this->logValue($payload['invoice'] ?? null) . '")';
 
         if ($timestamp === '' || $id === '' || $signature === '') {
-            $this->log('Frisbii webhook: missing signature fields in payload');
+            $this->logAlways('Frisbii webhook: REJECTED, missing signature fields in payload' . $context);
+            return false;
+        }
+
+        // Reject timestamps outside the allowed window (too old or in the future) to limit replay
+        // attacks. A timestamp that cannot be parsed fails closed.
+        $time = $this->parseWebhookTimestamp($timestamp);
+        $age  = $time === false ? 0 : time() - $time;
+
+        if ($time === false || $age > self::WEBHOOK_MAX_AGE || $age < -self::WEBHOOK_MAX_FUTURE) {
+            if ($time === false) {
+                $reason = 'not a valid timestamp';
+            } elseif ($age > 0) {
+                $reason = 'older than the ' . self::WEBHOOK_MAX_AGE . ' second window';
+            } else {
+                $reason = 'more than ' . self::WEBHOOK_MAX_FUTURE . ' seconds in the future';
+            }
+
+            $this->logAlways('Frisbii webhook: REJECTED, timestamp "' . $this->logValue($timestamp) . '" is ' . $reason . $context);
             return false;
         }
 
         $secret = $this->getWebhookSecret();
 
         if (!$secret) {
-            $this->log('Frisbii webhook: no webhook secret available for verification');
+            $this->logAlways('Frisbii webhook: REJECTED, no webhook secret available for verification' . $context);
             return false;
         }
 
@@ -410,198 +571,199 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         $secret = $this->getWebhookSecret();
 
         if (!$secret) {
+            $this->logAlways('Frisbii webhook: REJECTED, no webhook secret available for verification' . $context);
             return false;
         }
 
         $expected = hash_hmac('sha256', $timestamp . $id, $secret);
 
         if (!hash_equals($expected, $signature)) {
-            $this->log('Frisbii webhook: signature verification failed after retry');
+            $this->logAlways('Frisbii webhook: REJECTED, signature verification failed' . $context);
             return false;
         }
 
         return true;
     }
 
-    public function processWebhook(array $payload): void {
+    /**
+     * Frisbii documents the webhook timestamp as ISO-8601 ("2015-06-25T12:10:00.64Z"); epoch
+     * seconds are accepted as well. Anything else (relative formats such as "now", dates without
+     * a time or time zone, ...) returns false, so the caller fails closed.
+     */
+    private function parseWebhookTimestamp(string $timestamp): int|false {
+        if (preg_match('/^\d{9,10}$/D', $timestamp)) {
+            return (int)$timestamp;
+        }
+
+        if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})$/D', $timestamp, $match)
+            || !checkdate((int)$match[2], (int)$match[3], (int)$match[1])
+        ) {
+            return false;
+        }
+
+        return strtotime($timestamp);
+    }
+
+    /**
+     * Handles a webhook whose signature has already been verified and returns one of the
+     * WEBHOOK_* outcomes. Nothing here trusts the payload: event type and invoice handle are not
+     * signed, so every handled event is confirmed against the invoice in the Frisbii API.
+     */
+    public function processWebhook(array $payload): string {
+        $event_id   = is_string($payload['id'] ?? null) || is_int($payload['id'] ?? null) ? (string)$payload['id'] : '';
+        $event_type = $this->logValue($payload['event_type'] ?? null);
+
+        if ($event_id === '') {
+            $this->logAlways('Frisbii webhook ' . $event_type . ': REJECTED, missing event id');
+            return self::WEBHOOK_IGNORED;
+        }
+
+        // A signed webhook id is good for one definitive answer, whatever that answer was. The id
+        // is the only signed part besides the timestamp, so an id that was merely ignored
+        // (unhandled type, rejected by the API check) could otherwise be re-sent later with another
+        // event type and invoice. The lock makes "check, handle, store" atomic for one id, also
+        // when the same id is sent for two orders at the same moment.
+        $event_lock = 'frisbii_event_' . md5($event_id);
+
+        if (!$this->acquireLock($event_lock)) {
+            $this->logAlways('Frisbii webhook ' . $event_type . ': NOT PROCESSED, could not acquire lock for event "' . $this->logValue($event_id) . '", asking Frisbii to retry');
+            return self::WEBHOOK_RETRY;
+        }
+
+        try {
+            if ($this->isWebhookEventProcessed($event_id)) {
+                $this->logAlways('Frisbii webhook ' . $event_type . ': REJECTED, duplicate event "' . $this->logValue($event_id) . '" (already handled), invoice "' . $this->logValue($payload['invoice'] ?? null) . '", nothing changed');
+                return self::WEBHOOK_IGNORED;
+            }
+
+            $this->webhook_changed_order_id = 0;
+            $outcome = $this->dispatchWebhook($payload);
+
+            // WEBHOOK_RETRY is the one outcome that is not final: the id stays unused so Frisbii's
+            // next delivery of the same webhook is handled. order_id 0 = no order was changed.
+            if ($outcome !== self::WEBHOOK_RETRY) {
+                $this->markWebhookEventProcessed($event_id, $this->webhook_changed_order_id, $event_type);
+            }
+
+            return $outcome;
+        } finally {
+            $this->releaseLock($event_lock);
+        }
+    }
+
+    private function dispatchWebhook(array $payload): string {
         $raw_event = $payload['event_type'] ?? '';
 
         switch ($raw_event) {
             case 'invoice_authorized':
-                $this->handleInvoiceAuthorized($payload);
-                break;
+                return $this->handleInvoiceAuthorized($payload);
             case 'invoice_settled':
-                $this->handleInvoiceSettled($payload);
-                break;
+                return $this->handleInvoiceSettled($payload);
             case 'invoice_cancelled':
-                $this->handleInvoiceCancelled($payload);
-                break;
+                return $this->handleInvoiceCancelled($payload);
             case 'invoice_refund':
-                $this->handleInvoiceRefund($payload);
-                break;
+                return $this->handleInvoiceRefund($payload);
             default:
-                $this->log('Frisbii webhook: ignoring unhandled event type: ' . $raw_event);
+                $this->log('Frisbii webhook: ignoring unhandled event type: ' . $this->logValue($raw_event));
+                return self::WEBHOOK_IGNORED;
         }
     }
 
-    private function handleInvoiceAuthorized(array $payload): void {
-        $order_id  = $this->extractOrderId($payload);
-        $event_id  = $payload['id'] ?? '';
+    private function handleInvoiceAuthorized(array $payload): string {
+        // Never confirm an order whose total/currency differs from what was actually paid.
+        return $this->handleInvoiceEvent($payload, 'invoice_authorized', 'payment_reepay_checkout_order_status_authorized_id', ['authorized', 'settled'], true, false);
+    }
 
-        if (!$order_id || !$event_id) {
-            $this->log('Frisbii webhook invoice_authorized: missing order_id or event_id');
-            return;
+    private function handleInvoiceSettled(array $payload): string {
+        // Never confirm an order whose total/currency differs from what was actually paid.
+        return $this->handleInvoiceEvent($payload, 'invoice_settled', 'payment_reepay_checkout_order_status_settled_id', ['settled'], true, false);
+    }
+
+    private function handleInvoiceCancelled(array $payload): string {
+        return $this->handleInvoiceEvent($payload, 'invoice_cancelled', 'payment_reepay_checkout_order_status_cancelled_id', ['cancelled'], false, false);
+    }
+
+    private function handleInvoiceRefund(array $payload): string {
+        // A refunded invoice keeps its state; the refund shows as refunded_amount > 0.
+        // The credit note handle comes from the unsigned payload: only a plain handle is put in the note.
+        $credit_note_handle = is_string($payload['credit_note'] ?? null) && preg_match('/^[A-Za-z0-9_-]{1,64}$/D', $payload['credit_note']) ? $payload['credit_note'] : '';
+        $note = 'Refund processed via Frisbii webhook.' . ($credit_note_handle ? ' Credit note: ' . $credit_note_handle : '');
+
+        return $this->handleInvoiceEvent($payload, 'invoice_refund', 'payment_reepay_checkout_order_status_refunded_id', [], false, true, $note);
+    }
+
+    /**
+     * Shared flow of the four invoice events:
+     * strict handle -> order lock -> API confirmation -> status change.
+     * The duplicate check and the storing of the event id are done by processWebhook(), which
+     * holds the event lock around this call.
+     */
+    private function handleInvoiceEvent(array $payload, string $event, string $status_key, array $allowed_states, bool $check_amount, bool $require_refund, string $note = ''): string {
+        $handle = $payload['invoice'] ?? null;
+
+        // Handle must be exactly "<order_id>" or "<order_id>-<timestamp>" (see generateRequestParams()).
+        if (!is_string($handle) || !preg_match('/^(\d+)(?:-\d+)?$/D', $handle, $match) || (int)$match[1] < 1) {
+            $this->logAlways('Frisbii webhook ' . $event . ': REJECTED, malformed invoice handle "' . $this->logValue($handle) . '"');
+            return self::WEBHOOK_IGNORED;
         }
 
+        $order_id = (int)$match[1];
+
         if (!$this->acquireOrderLock($order_id)) {
-            $this->log('Frisbii webhook invoice_authorized: could not acquire lock for order ' . $order_id);
-            return;
+            $this->logAlways('Frisbii webhook ' . $event . ': NOT PROCESSED, could not acquire lock for order ' . $order_id . ', asking Frisbii to retry');
+            return self::WEBHOOK_RETRY;
         }
 
         try {
-            if ($this->isWebhookEventProcessed($order_id, $event_id)) {
-                $this->log('Frisbii webhook invoice_authorized: duplicate event ' . $event_id . ', skipping');
-                return;
+            $this->load->model('checkout/order');
+            $order_info = $this->model_checkout_order->getOrder($order_id);
+
+            if (empty($order_info)) {
+                $this->logAlways('Frisbii webhook ' . $event . ': REJECTED, order ' . $order_id . ' not found');
+                return self::WEBHOOK_IGNORED;
             }
 
-            $status_id = (int)$this->config->get('payment_reepay_checkout_order_status_authorized_id');
+            $confirmation = $this->confirmWebhookInvoice($order_info, $handle, $event, $allowed_states, $check_amount, $require_refund);
+
+            if ($confirmation === self::INVOICE_LOOKUP_FAILED) {
+                return self::WEBHOOK_RETRY;
+            }
+
+            if ($confirmation !== self::INVOICE_CONFIRMED) {
+                return self::WEBHOOK_IGNORED;
+            }
+
+            $status_id = (int)$this->config->get($status_key);
             if (!$status_id) {
                 $status_id = (int)$this->config->get('payment_reepay_checkout_order_status_id');
             }
 
-            $this->load->model('checkout/order');
-            $this->model_checkout_order->addHistory($order_id, $status_id, '', false);
-            $this->markWebhookEventProcessed($order_id, $event_id);
-            $this->log('Frisbii webhook invoice_authorized: order ' . $order_id . ' → status ' . $status_id);
-        } finally {
-            $this->releaseOrderLock($order_id);
-        }
-    }
-
-    private function handleInvoiceSettled(array $payload): void {
-        $order_id = $this->extractOrderId($payload);
-        $event_id = $payload['id'] ?? '';
-
-        if (!$order_id || !$event_id) {
-            $this->log('Frisbii webhook invoice_settled: missing order_id or event_id');
-            return;
-        }
-
-        if (!$this->acquireOrderLock($order_id)) {
-            $this->log('Frisbii webhook invoice_settled: could not acquire lock for order ' . $order_id);
-            return;
-        }
-
-        try {
-            if ($this->isWebhookEventProcessed($order_id, $event_id)) {
-                $this->log('Frisbii webhook invoice_settled: duplicate event ' . $event_id . ', skipping');
-                return;
-            }
-
-            $status_id = (int)$this->config->get('payment_reepay_checkout_order_status_settled_id');
-            if (!$status_id) {
-                $status_id = (int)$this->config->get('payment_reepay_checkout_order_status_id');
-            }
-
-            $this->load->model('checkout/order');
-            $this->model_checkout_order->addHistory($order_id, $status_id, '', false);
-            $this->markWebhookEventProcessed($order_id, $event_id);
-            $this->log('Frisbii webhook invoice_settled: order ' . $order_id . ' → status ' . $status_id);
-        } finally {
-            $this->releaseOrderLock($order_id);
-        }
-    }
-
-    private function handleInvoiceCancelled(array $payload): void {
-        $order_id = $this->extractOrderId($payload);
-        $event_id = $payload['id'] ?? '';
-
-        if (!$order_id || !$event_id) {
-            $this->log('Frisbii webhook invoice_cancelled: missing order_id or event_id');
-            return;
-        }
-
-        if (!$this->acquireOrderLock($order_id)) {
-            $this->log('Frisbii webhook invoice_cancelled: could not acquire lock for order ' . $order_id);
-            return;
-        }
-
-        try {
-            if ($this->isWebhookEventProcessed($order_id, $event_id)) {
-                $this->log('Frisbii webhook invoice_cancelled: duplicate event ' . $event_id . ', skipping');
-                return;
-            }
-
-            $status_id = (int)$this->config->get('payment_reepay_checkout_order_status_cancelled_id');
-            if (!$status_id) {
-                $status_id = (int)$this->config->get('payment_reepay_checkout_order_status_id');
-            }
-
-            $this->load->model('checkout/order');
-            $this->model_checkout_order->addHistory($order_id, $status_id, '', false);
-            $this->markWebhookEventProcessed($order_id, $event_id);
-            $this->log('Frisbii webhook invoice_cancelled: order ' . $order_id . ' → status ' . $status_id);
-        } finally {
-            $this->releaseOrderLock($order_id);
-        }
-    }
-
-    private function handleInvoiceRefund(array $payload): void {
-        $order_id = $this->extractOrderId($payload);
-        $event_id = $payload['id'] ?? '';
-
-        if (!$order_id || !$event_id) {
-            $this->log('Frisbii webhook invoice_refund: missing order_id or event_id');
-            return;
-        }
-
-        if (!$this->acquireOrderLock($order_id)) {
-            $this->log('Frisbii webhook invoice_refund: could not acquire lock for order ' . $order_id);
-            return;
-        }
-
-        try {
-            if ($this->isWebhookEventProcessed($order_id, $event_id)) {
-                $this->log('Frisbii webhook invoice_refund: duplicate event ' . $event_id . ', skipping');
-                return;
-            }
-
-            $status_id = (int)$this->config->get('payment_reepay_checkout_order_status_refunded_id');
-            if (!$status_id) {
-                $status_id = (int)$this->config->get('payment_reepay_checkout_order_status_id');
-            }
-
-            // invoice and credit_note are string handles in the webhook payload;
-            // amount/currency require a separate API call so are omitted from the note.
-            $credit_note_handle = (string)($payload['credit_note'] ?? '');
-            $note = 'Refund processed via Frisbii webhook.' . ($credit_note_handle ? ' Credit note: ' . $credit_note_handle : '');
-
-            $this->load->model('checkout/order');
             $this->model_checkout_order->addHistory($order_id, $status_id, $note, false);
-            $this->markWebhookEventProcessed($order_id, $event_id);
-            $this->log('Frisbii webhook invoice_refund: order ' . $order_id . ' → status ' . $status_id);
+            $this->webhook_changed_order_id = $order_id;
+            $this->log('Frisbii webhook ' . $event . ': order ' . $order_id . ' → status ' . $status_id);
+
+            return self::WEBHOOK_PROCESSED;
         } finally {
             $this->releaseOrderLock($order_id);
         }
-    }
-
-    private function extractOrderId(array $payload): int {
-        // Frisbii sends invoice as a string handle, not an object
-        $handle = (string)($payload['invoice'] ?? '');
-        $parts  = explode('-', $handle);
-        return (int)($parts[0] ?? 0);
     }
 
     public function acquireOrderLock(int $order_id): bool {
-        $lock_name = 'frisbii_order_' . $order_id;
+        return $this->acquireLock('frisbii_order_' . $order_id);
+    }
+
+    public function releaseOrderLock(int $order_id): void {
+        $this->releaseLock('frisbii_order_' . $order_id);
+    }
+
+    private function acquireLock(string $lock_name): bool {
         $result = $this->db->query(
             "SELECT GET_LOCK('" . $this->db->escape($lock_name) . "', 30) AS acquired"
         );
         return (bool)($result->row['acquired'] ?? false);
     }
 
-    public function releaseOrderLock(int $order_id): void {
-        $lock_name = 'frisbii_order_' . $order_id;
+    private function releaseLock(string $lock_name): void {
         $this->db->query(
             "SELECT RELEASE_LOCK('" . $this->db->escape($lock_name) . "')"
         );
@@ -620,42 +782,71 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         );
     }
 
-    public function isWebhookEventProcessed(int $order_id, string $event_id): bool {
-        $result = $this->db->query(
-            "SELECT `payment_custom_field` FROM `" . DB_PREFIX . "order`
-             WHERE order_id = '" . (int)$order_id . "'"
-        );
-
-        if (!$result->num_rows) {
-            return false;
+    /**
+     * The id of every signature-verified webhook that got a final answer (applied or ignored) is
+     * kept in one table for the whole shop (not per order), so an id is also recognised when it
+     * is replayed with another event type or against another order. order_id 0 = nothing changed.
+     * The table is created by the admin install(); this covers shops upgraded without reinstalling.
+     */
+    private function ensureWebhookEventTable(): void {
+        if ($this->webhook_event_table_checked) {
+            return;
         }
-
-        $field = json_decode($result->row['payment_custom_field'] ?? '{}', true);
-        $processed = $field['processed_webhook_ids'] ?? [];
-
-        return in_array($event_id, $processed, true);
-    }
-
-    public function markWebhookEventProcessed(int $order_id, string $event_id): void {
-        $result = $this->db->query(
-            "SELECT `payment_custom_field` FROM `" . DB_PREFIX . "order`
-             WHERE order_id = '" . (int)$order_id . "'"
-        );
-
-        $field = json_decode($result->row['payment_custom_field'] ?? '{}', true) ?: [];
-        $processed = $field['processed_webhook_ids'] ?? [];
-
-        if (!in_array($event_id, $processed, true)) {
-            $processed[] = $event_id;
-        }
-
-        $field['processed_webhook_ids'] = $processed;
 
         $this->db->query(
-            "UPDATE `" . DB_PREFIX . "order`
-             SET `payment_custom_field` = '" . $this->db->escape(json_encode($field)) . "'
-             WHERE order_id = '" . (int)$order_id . "'"
+            "CREATE TABLE IF NOT EXISTS `" . DB_PREFIX . "frisbii_webhook_event` (
+                `event_hash` char(64) NOT NULL,
+                `event_id` varchar(255) NOT NULL,
+                `event_type` varchar(64) NOT NULL,
+                `order_id` int(11) NOT NULL,
+                `date_added` datetime NOT NULL,
+                PRIMARY KEY (`event_hash`),
+                KEY `date_added` (`date_added`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
         );
+
+        $this->webhook_event_table_checked = true;
+    }
+
+    public function isWebhookEventProcessed(string $event_id): bool {
+        $this->ensureWebhookEventTable();
+
+        // Looked up by hash: fixed length and exact, whatever the id looks like.
+        $result = $this->db->query(
+            "SELECT `event_hash` FROM `" . DB_PREFIX . "frisbii_webhook_event`
+             WHERE `event_hash` = '" . hash('sha256', $event_id) . "' LIMIT 1"
+        );
+
+        return (bool)$result->num_rows;
+    }
+
+    public function markWebhookEventProcessed(string $event_id, int $order_id, string $event_type): void {
+        $this->ensureWebhookEventTable();
+
+        $this->db->query(
+            "INSERT IGNORE INTO `" . DB_PREFIX . "frisbii_webhook_event` SET
+             `event_hash` = '" . hash('sha256', $event_id) . "',
+             `event_id` = '" . $this->db->escape(substr($event_id, 0, 255)) . "',
+             `event_type` = '" . $this->db->escape(substr($event_type, 0, 64)) . "',
+             `order_id` = '" . (int)$order_id . "',
+             `date_added` = NOW()"
+        );
+
+        // Ids only matter while a webhook with that id can still pass the timestamp window;
+        // old rows are removed so the table does not grow without limit.
+        $this->db->query(
+            "DELETE FROM `" . DB_PREFIX . "frisbii_webhook_event`
+             WHERE `date_added` < DATE_SUB(NOW(), INTERVAL " . (int)self::WEBHOOK_EVENT_KEEP_DAYS . " DAY)"
+        );
+    }
+
+    // Payload values are attacker-controlled: keep log lines to one short line of plain characters.
+    private function logValue(mixed $value): string {
+        if (!is_scalar($value)) {
+            return 'n/a';
+        }
+
+        return substr(preg_replace('/[^A-Za-z0-9_.:+ -]/', '?', (string)$value), 0, 64);
     }
 
     public function log(mixed $data): void {
@@ -663,6 +854,12 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
             $log = new \Opencart\System\Library\Log('reepay_checkout.log');
             $log->write($data);
         }
+    }
+
+    // For security-relevant rejections: written even when the debug setting is off.
+    private function logAlways(string $message): void {
+        $log = new \Opencart\System\Library\Log('reepay_checkout.log');
+        $log->write($message);
     }
 
     protected function createChargeSession(bool $unique_invoice_handle = false): false|string {
@@ -697,7 +894,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
 
         foreach ($logo_array as $logo) {
             $i++;
-            $logos .= '<img src="extension/frisbii/image/reepay/reepay_' . $logo . '.png" height="32px" style="' . $style . '" width="93px"/>';
+            $logos .= '<img src="extension/frisbii/image/reepay/reepay_' . htmlspecialchars($logo, ENT_QUOTES, 'UTF-8') . '.png" height="32px" style="' . $style . '" width="93px"/>';
             if ($i % 4 == 0) {
                 $logos .= '<br/>';
             }
