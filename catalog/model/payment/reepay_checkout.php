@@ -8,12 +8,16 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
     const GET_INVOICE_URL       = 'https://api.frisbii.com/v1/invoice/';
     const WEBHOOK_SETTINGS_URL  = 'https://api.frisbii.com/v1/account/webhook_settings';
     const WEBHOOK_SECRET_TTL    = 600; // 10 minutes in seconds
-    // Accepted distance between the webhook timestamp and now, in seconds. Set to one hour so that
-    // Frisbii's delivery retries (2, 5, 10, 20, 30 min, then hourly), which reuse the original
-    // timestamp, still fall inside the window and can recover a 503'd event after a longer outage.
-    // The wider window does not let a replayed webhook force a false state: every event is confirmed
-    // against the invoice in the API and deduplicated shop-wide by event id (see handleInvoiceEvent()).
-    const WEBHOOK_MAX_AGE       = 3600;
+    // Oldest webhook timestamp that is accepted, in seconds (4 days). Frisbii retries a failed
+    // delivery after 2, 5, 10, 20 and 30 minutes and then every hour for three days, and a retry
+    // carries the original timestamp. The window has to cover that whole period, otherwise an event
+    // answered with 503 (or missed during an outage) could not be recovered after the window passed.
+    // The wide window does not let a replayed webhook force a false state: every event is confirmed
+    // against the invoice in the API, and its id is remembered shop-wide for WEBHOOK_EVENT_KEEP_DAYS,
+    // which must stay longer than this window (see processWebhook() and handleInvoiceEvent()).
+    const WEBHOOK_MAX_AGE       = 345600;
+    // How far in the future a webhook timestamp may be, in seconds; allows for clock differences only.
+    const WEBHOOK_MAX_FUTURE    = 3600;
     const WEBHOOK_EVENT_KEEP_DAYS = 30; // how long processed webhook ids are remembered
 
     // Outcome of processWebhook(); the controller turns it into the HTTP status.
@@ -530,12 +534,21 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
             return false;
         }
 
-        // Reject timestamps outside the allowed window (old or future) to limit replay attacks.
-        // A timestamp that cannot be parsed fails closed.
+        // Reject timestamps outside the allowed window (too old or in the future) to limit replay
+        // attacks. A timestamp that cannot be parsed fails closed.
         $time = $this->parseWebhookTimestamp($timestamp);
+        $age  = $time === false ? 0 : time() - $time;
 
-        if ($time === false || abs(time() - $time) > self::WEBHOOK_MAX_AGE) {
-            $this->logAlways('Frisbii webhook: REJECTED, timestamp "' . $this->logValue($timestamp) . '" is ' . ($time === false ? 'not a valid timestamp' : 'outside the ' . self::WEBHOOK_MAX_AGE . ' second window') . $context);
+        if ($time === false || $age > self::WEBHOOK_MAX_AGE || $age < -self::WEBHOOK_MAX_FUTURE) {
+            if ($time === false) {
+                $reason = 'not a valid timestamp';
+            } elseif ($age > 0) {
+                $reason = 'older than the ' . self::WEBHOOK_MAX_AGE . ' second window';
+            } else {
+                $reason = 'more than ' . self::WEBHOOK_MAX_FUTURE . ' seconds in the future';
+            }
+
+            $this->logAlways('Frisbii webhook: REJECTED, timestamp "' . $this->logValue($timestamp) . '" is ' . $reason . $context);
             return false;
         }
 
