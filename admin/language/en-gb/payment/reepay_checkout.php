@@ -6,6 +6,7 @@ $_['heading_title'] = 'Frisbii Payments';
 // Text
 $_['text_extension'] = 'Extensions';
 $_['text_success']   = 'Frisbii Payments settings has been saved';
+$_['error_permission'] = 'Warning: You do not have permission to modify Frisbii Payments!';
 
 $_['text_reepay_checkout'] = '<a target="_BLANK" href="https://frisbii.com/"><img src="view/image/payment/reepay.png" alt="Frisbii Payments" title="Frisbii Payments" style="border:1px solid #EEEEEE;width:57px;height:27px;" /></a>';
 

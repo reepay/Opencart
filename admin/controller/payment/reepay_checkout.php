@@ -211,6 +211,8 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         // card_type becomes part of an image file name, so only a plain identifier is allowed.
         $card_type = $data['transactions'][0][$payment_type . '_transaction']['card_type'] ?? null;
         $data['card_type'] = is_string($card_type) && preg_match('/^[a-z0-9_]+$/', $card_type) ? $card_type : null;
+        // The admin pages are not served from the shop root, so the logo URL starts at the catalog URL.
+        $data['card_logo'] = $data['card_type'] ? HTTP_CATALOG . \Opencart\System\Library\Extension\Frisbii\Reepay\Logo::path('reepay_' . $data['card_type'] . '.png') : null;
         $data['exp_date']    = $data['transactions'][0][$payment_type . '_transaction']['exp_date']    ?? null;
         $data['masked_card'] = $data['transactions'][0][$payment_type . '_transaction']['masked_card'] ?? null;
 
@@ -218,6 +220,10 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
     }
 
     public function charge_settle(): void {
+        if (!$this->checkModifyPermission('charge_settle')) {
+            return;
+        }
+
         $handle = $this->getPostedHandle();
         if (null === $handle) {
             return;
@@ -230,6 +236,10 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
     }
 
     public function void_charge(): void {
+        if (!$this->checkModifyPermission('void_charge')) {
+            return;
+        }
+
         $handle = $this->getPostedHandle();
         if (null === $handle) {
             return;
@@ -242,6 +252,10 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
     }
 
     public function refund_charge(): void {
+        if (!$this->checkModifyPermission('refund_charge')) {
+            return;
+        }
+
         $handle = $this->getPostedHandle();
         if (null === $handle) {
             return;
@@ -251,6 +265,28 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         $this->response->setOutput(
             $this->model_extension_frisbii_payment_reepay_checkout->refundCharge($handle, $this->request->post['amount'])
         );
+    }
+
+    /**
+     * Capture, refund and cancel move money, so they need the "modify" permission. OpenCart itself
+     * only checks "access" for an extension route, which also covers read-only users.
+     * Returns false after writing a failure response (same JSON shape as the model's sendCurl()).
+     */
+    protected function checkModifyPermission(string $action): bool {
+        if ($this->user->hasPermission('modify', 'extension/frisbii/payment/reepay_checkout')) {
+            return true;
+        }
+
+        $this->load->language('extension/frisbii/payment/reepay_checkout');
+        $this->load->model('extension/frisbii/payment/reepay_checkout');
+
+        // The user name is chosen by an admin; keep the log line plain.
+        $user_name = substr(preg_replace('/[^A-Za-z0-9_.@-]/', '?', $this->user->getUserName()), 0, 64);
+        $this->model_extension_frisbii_payment_reepay_checkout->logAlways('Admin ' . $action . ': REFUSED, user "' . $user_name . '" has no modify permission for Frisbii Payments');
+
+        $this->response->setOutput(json_encode(['status' => 'failure', 'error' => $this->language->get('error_permission')]));
+
+        return false;
     }
 
     /**

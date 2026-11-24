@@ -19,10 +19,10 @@
       {% if masked_card %}
         <tr><td>{{ Masked_card }}:</td><td>{{ masked_card|escape }}</td></tr>
       {% endif %}
-      {% if card_type %}
+      {% if card_logo %}
         <tr>
           <td colspan="2">
-            <img src="extension/frisbii/image/reepay/reepay_{{ card_type|escape('html_attr') }}.png" style="width:110px;height:60px;"/>
+            <img src="{{ card_logo|escape('html_attr') }}" style="width:110px;height:60px;" alt="{{ card_type|escape('html_attr') }}"/>
           </td>
         </tr>
       {% endif %}
