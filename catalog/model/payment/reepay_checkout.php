@@ -78,7 +78,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         if (is_array($logo_array)) {
             $img_style = 'height:25px;width:auto;vertical-align:middle;border-radius:4px;border:1px solid #f0f0f0;margin-right:4px;';
             foreach ($logo_array as $logo) {
-                $logos_html .= '<img src="extension/frisbii/image/reepay/reepay_' . htmlspecialchars($logo, ENT_QUOTES, 'UTF-8') . '.png" style="' . $img_style . '" alt="' . htmlspecialchars($logo, ENT_QUOTES, 'UTF-8') . '"/>';
+                $logos_html .= '<img src="' . htmlspecialchars(\Opencart\System\Library\Extension\Frisbii\Reepay\Logo::path('reepay_' . $logo . '.png'), ENT_QUOTES, 'UTF-8') . '" style="' . $img_style . '" alt="' . htmlspecialchars($logo, ENT_QUOTES, 'UTF-8') . '"/>';
             }
         }
 
@@ -1030,7 +1030,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
 
         foreach ($logo_array as $logo) {
             $i++;
-            $logos .= '<img src="extension/frisbii/image/reepay/reepay_' . htmlspecialchars($logo, ENT_QUOTES, 'UTF-8') . '.png" height="32px" style="' . $style . '" width="93px"/>';
+            $logos .= '<img src="' . htmlspecialchars(\Opencart\System\Library\Extension\Frisbii\Reepay\Logo::path('reepay_' . $logo . '.png'), ENT_QUOTES, 'UTF-8') . '" height="32px" style="' . $style . '" width="93px"/>';
             if ($i % 4 == 0) {
                 $logos .= '<br/>';
             }

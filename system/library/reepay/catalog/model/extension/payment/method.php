@@ -38,8 +38,8 @@ trait Method {
         ];
 
         $img_style = 'height:25px;width:auto;vertical-align:middle;border-radius:4px;border:1px solid #f0f0f0;margin-right:8px;';
-        $img_src   = 'extension/frisbii/image/reepay/' . $this->payment_method . '.png';
-        $name_with_logo = '<img src="' . $img_src . '" style="' . $img_style . '" alt="' . htmlspecialchars($method_title) . '"/>' . $method_title;
+        $img_src   = \Opencart\System\Library\Extension\Frisbii\Reepay\Logo::path($this->payment_method . '.png');
+        $name_with_logo = '<img src="' . htmlspecialchars($img_src, ENT_QUOTES, 'UTF-8') . '" style="' . $img_style . '" alt="' . htmlspecialchars($method_title) . '"/>' . $method_title;
 
         return [
             'code'       => $this->payment_method,

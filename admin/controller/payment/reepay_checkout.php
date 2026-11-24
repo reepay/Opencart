@@ -211,6 +211,8 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
         // card_type becomes part of an image file name, so only a plain identifier is allowed.
         $card_type = $data['transactions'][0][$payment_type . '_transaction']['card_type'] ?? null;
         $data['card_type'] = is_string($card_type) && preg_match('/^[a-z0-9_]+$/', $card_type) ? $card_type : null;
+        // The admin pages are not served from the shop root, so the logo URL starts at the catalog URL.
+        $data['card_logo'] = $data['card_type'] ? HTTP_CATALOG . \Opencart\System\Library\Extension\Frisbii\Reepay\Logo::path('reepay_' . $data['card_type'] . '.png') : null;
         $data['exp_date']    = $data['transactions'][0][$payment_type . '_transaction']['exp_date']    ?? null;
         $data['masked_card'] = $data['transactions'][0][$payment_type . '_transaction']['masked_card'] ?? null;
 
