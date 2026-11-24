@@ -8,6 +8,9 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
     const GET_INVOICE_URL       = 'https://api.frisbii.com/v1/invoice/';
     const WEBHOOK_SETTINGS_URL  = 'https://api.frisbii.com/v1/account/webhook_settings';
     const WEBHOOK_SECRET_TTL    = 600; // 10 minutes in seconds
+    // After a signature mismatch the secret is fetched again at most this often (seconds), so
+    // requests with a wrong signature cannot be used to make API calls with the merchant's key.
+    const WEBHOOK_SECRET_MIN_REFETCH = 60;
     // Oldest webhook timestamp that is accepted, in seconds (4 days). Frisbii retries a failed
     // delivery after 2, 5, 10, 20 and 30 minutes and then every hour for three days, and a retry
     // carries the original timestamp. The window has to cover that whole period, otherwise an event
@@ -19,6 +22,13 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
     // How far in the future a webhook timestamp may be, in seconds; allows for clock differences only.
     const WEBHOOK_MAX_FUTURE    = 3600;
     const WEBHOOK_EVENT_KEEP_DAYS = 30; // how long processed webhook ids are remembered
+
+    // Debug log redaction (see redactForLog()).
+    // Keys whose value is never written to the log, wherever they appear in a request or response.
+    private const LOG_REDACT_KEYS   = ['secret', 'alert_emails', 'email', 'phone', 'first_name', 'last_name', 'address', 'address2', 'city', 'postal_code', 'masked_card', 'fingerprint', 'exp_date'];
+    // Blocks that describe a person: every value inside is redacted, except LOG_KEEP_KEYS.
+    private const LOG_REDACT_BLOCKS = ['customer', 'billing_address', 'shipping_address'];
+    private const LOG_KEEP_KEYS     = ['handle', 'generate_handle', 'test', 'country'];
 
     // Outcome of processWebhook(); the controller turns it into the HTTP status.
     const WEBHOOK_PROCESSED = 'processed'; // order was updated                         -> 200
@@ -273,11 +283,9 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
             'Content-Type: application/json',
         ];
 
+        // Only redacted copies are logged; $params itself is sent to the API unchanged.
         $this->log('Request to server: ' . $url);
-        $safe_params = $params;
-        if (isset($safe_params['order']['customer']))        $safe_params['order']['customer']         = '[redacted]';
-        if (isset($safe_params['order']['billing_address'])) $safe_params['order']['billing_address']  = '[redacted]';
-        $this->log($safe_params);
+        $this->log($this->redactForLog($params));
 
         $key = $this->config->get('payment_reepay_checkout_test')
             ? trim($this->config->get('payment_reepay_checkout_private_key_test'))
@@ -302,8 +310,9 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         $response     = curl_exec($ch);
         $response_arr = json_decode($response, true);
 
+        // The response can hold the webhook secret (webhook_settings) and customer data (invoices).
         $this->log('Response from server:');
-        $this->log($response_arr);
+        $this->log($this->redactForLog($response_arr));
 
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
@@ -469,24 +478,78 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         return self::INVOICE_CONFIRMED;
     }
 
-    public function getWebhookSecret(): string|null {
+    /**
+     * Called after a signature mismatch. Returns:
+     *  - null when the secret was fetched less than WEBHOOK_SECRET_MIN_REFETCH seconds ago (no API call),
+     *  - the secret another request has just stored, if it differs from the one already tried,
+     *  - otherwise a freshly fetched secret ('' when the fetch failed).
+     * The lock makes the age check and the fetch one step, so simultaneous requests with a wrong
+     * signature cause at most one API call.
+     */
+    private function refetchWebhookSecretAfterMismatch(string $tried_secret): ?string {
+        if (!$this->acquireLock('frisbii_webhook_secret')) {
+            return null;
+        }
+
+        try {
+            $cached = $this->getCachedWebhookSecret();
+
+            // Another request renewed the cache while this one waited: use that secret.
+            if ($cached['secret'] !== null && $cached['secret'] !== $tried_secret) {
+                return $cached['secret'];
+            }
+
+            if ($cached['cached_at'] !== null && (time() - $cached['cached_at']) < self::WEBHOOK_SECRET_MIN_REFETCH) {
+                return null;
+            }
+
+            $this->log('Frisbii webhook: signature mismatch, fetching the webhook secret again');
+
+            return (string)$this->getWebhookSecret(true);
+        } finally {
+            $this->releaseLock('frisbii_webhook_secret');
+        }
+    }
+
+    /** @return array{secret: ?string, cached_at: ?int} */
+    private function getCachedWebhookSecret(): array {
+        // Newest row first: older versions stored the cache with REPLACE INTO, which adds a row
+        // each time (the setting table has no unique key on store_id + key).
         $cached_secret = $this->db->query(
             "SELECT value FROM `" . DB_PREFIX . "setting`
              WHERE `key` = 'payment_reepay_checkout_webhook_secret'
-             AND store_id = '0' LIMIT 1"
+             AND store_id = '0' ORDER BY setting_id DESC LIMIT 1"
         );
         $cached_at = $this->db->query(
             "SELECT value FROM `" . DB_PREFIX . "setting`
              WHERE `key` = 'payment_reepay_checkout_webhook_secret_cached_at'
-             AND store_id = '0' LIMIT 1"
+             AND store_id = '0' ORDER BY setting_id DESC LIMIT 1"
         );
 
-        if ($cached_secret->num_rows && $cached_at->num_rows) {
-            if ((time() - (int)$cached_at->row['value']) < self::WEBHOOK_SECRET_TTL) {
-                return $cached_secret->row['value'];
+        return [
+            'secret'    => $cached_secret->num_rows ? (string)$cached_secret->row['value'] : null,
+            'cached_at' => $cached_at->num_rows ? (int)$cached_at->row['value'] : null,
+        ];
+    }
+
+    /**
+     * Returns the webhook secret from the cache while it is younger than WEBHOOK_SECRET_TTL,
+     * otherwise (or with $force) fetches it from the API and stores it with the fetch time.
+     */
+    public function getWebhookSecret(bool $force = false): string|null {
+        if (!$force) {
+            $cached = $this->getCachedWebhookSecret();
+
+            if ($cached['secret'] !== null && $cached['cached_at'] !== null && (time() - $cached['cached_at']) < self::WEBHOOK_SECRET_TTL) {
+                return $cached['secret'];
             }
         }
 
+        return $this->fetchWebhookSecret();
+    }
+
+    // One API call; the cache is overwritten (not deleted first), so other requests keep using it.
+    private function fetchWebhookSecret(): string|null {
         $result = json_decode($this->sendCurl(self::WEBHOOK_SETTINGS_URL, [], false), true);
 
         if (($result['status'] ?? '') !== 'success' || empty($result['body']['secret'])) {
@@ -495,22 +558,49 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         }
 
         $secret = $result['body']['secret'];
-        $now    = time();
 
-        $this->db->query(
-            "REPLACE INTO `" . DB_PREFIX . "setting` SET
-             store_id = '0', code = 'payment_reepay_checkout',
-             `key` = 'payment_reepay_checkout_webhook_secret',
-             value = '" . $this->db->escape($secret) . "', serialized = '0'"
-        );
-        $this->db->query(
-            "REPLACE INTO `" . DB_PREFIX . "setting` SET
-             store_id = '0', code = 'payment_reepay_checkout',
-             `key` = 'payment_reepay_checkout_webhook_secret_cached_at',
-             value = '" . (int)$now . "', serialized = '0'"
-        );
+        $this->storeWebhookCacheSetting('payment_reepay_checkout_webhook_secret', $secret);
+        $this->storeWebhookCacheSetting('payment_reepay_checkout_webhook_secret_cached_at', (string)time());
 
         return $secret;
+    }
+
+    /**
+     * Writes one cache value. The setting table has no unique key on store_id + key, so REPLACE INTO
+     * would add a new row every time; existing rows are updated instead (duplicates left by older
+     * versions are removed), and a row is only inserted when there is none.
+     */
+    private function storeWebhookCacheSetting(string $key, string $value): void {
+        $rows = $this->db->query(
+            "SELECT setting_id FROM `" . DB_PREFIX . "setting`
+             WHERE `key` = '" . $this->db->escape($key) . "' AND store_id = '0'
+             ORDER BY setting_id DESC"
+        );
+
+        if (!$rows->num_rows) {
+            $this->db->query(
+                "INSERT INTO `" . DB_PREFIX . "setting` SET
+                 store_id = '0', code = 'payment_reepay_checkout',
+                 `key` = '" . $this->db->escape($key) . "',
+                 value = '" . $this->db->escape($value) . "', serialized = '0'"
+            );
+            return;
+        }
+
+        $keep_id = (int)$rows->row['setting_id'];
+
+        $this->db->query(
+            "UPDATE `" . DB_PREFIX . "setting` SET value = '" . $this->db->escape($value) . "'
+             WHERE setting_id = '" . $keep_id . "'"
+        );
+
+        if ($rows->num_rows > 1) {
+            $this->db->query(
+                "DELETE FROM `" . DB_PREFIX . "setting`
+                 WHERE `key` = '" . $this->db->escape($key) . "' AND store_id = '0'
+                 AND setting_id <> '" . $keep_id . "'"
+            );
+        }
     }
 
     public function clearCachedWebhookSecret(): void {
@@ -565,10 +655,16 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
             return true;
         }
 
-        // Signature mismatch — secret may be stale; retry once with a fresh fetch
-        $this->log('Frisbii webhook: signature mismatch, clearing cache and retrying');
-        $this->clearCachedWebhookSecret();
-        $secret = $this->getWebhookSecret();
+        // Signature mismatch: the secret may have been renewed at Frisbii, so it is fetched again,
+        // but at most once per WEBHOOK_SECRET_MIN_REFETCH seconds. Anyone can send a request with a
+        // wrong signature; without this limit every such request would cost an API call with the
+        // merchant's key. A genuine webhook refused in the meantime is delivered again by Frisbii.
+        $secret = $this->refetchWebhookSecretAfterMismatch($secret);
+
+        if (null === $secret) {
+            $this->logAlways('Frisbii webhook: REJECTED, signature verification failed (secret not refetched, last fetch less than ' . self::WEBHOOK_SECRET_MIN_REFETCH . ' seconds ago)' . $context);
+            return false;
+        }
 
         if (!$secret) {
             $this->logAlways('Frisbii webhook: REJECTED, no webhook secret available for verification' . $context);
@@ -734,7 +830,17 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
             }
 
             $status_id = (int)$this->config->get($status_key);
+
             if (!$status_id) {
+                // Only a successful payment may fall back to the "paid" order status. For a
+                // cancelled or refunded payment that would make the order look paid (and run
+                // fulfilment again), so the order is left unchanged. The event id is still stored
+                // by processWebhook(), so Frisbii does not deliver this webhook again.
+                if (!in_array($event, ['invoice_authorized', 'invoice_settled'], true)) {
+                    $this->logAlways('Frisbii webhook ' . $event . ': order ' . $order_id . ' NOT CHANGED, no order status configured for this event (' . $status_key . ')');
+                    return self::WEBHOOK_IGNORED;
+                }
+
                 $status_id = (int)$this->config->get('payment_reepay_checkout_order_status_id');
             }
 
@@ -849,6 +955,36 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         return substr(preg_replace('/[^A-Za-z0-9_.:+ -]/', '?', (string)$value), 0, 64);
     }
 
+    /**
+     * Returns a copy of an API request or response that is safe to write to the log: the webhook
+     * secret, personal data and card details are replaced with "[redacted]", everything else
+     * (handles, states, amounts, error messages) stays readable. Only the logged copy is changed.
+     */
+    private function redactForLog(mixed $data, bool $in_block = false): mixed {
+        if (!is_array($data)) {
+            // A response that is not a JSON object or list has no keys to judge it by.
+            return $data === null ? null : '[not logged: not a JSON object]';
+        }
+
+        foreach ($data as $key => $value) {
+            $name = is_string($key) ? strtolower($key) : '';
+
+            if ($value === null || $value === '' || $value === []) {
+                continue;
+            }
+
+            if (in_array($name, self::LOG_REDACT_KEYS, true)) {
+                $data[$key] = '[redacted]';
+            } elseif (is_array($value)) {
+                $data[$key] = $this->redactForLog($value, $in_block || in_array($name, self::LOG_REDACT_BLOCKS, true));
+            } elseif ($in_block && !in_array($name, self::LOG_KEEP_KEYS, true)) {
+                $data[$key] = '[redacted]';
+            }
+        }
+
+        return $data;
+    }
+
     public function log(mixed $data): void {
         if ($this->config->get('payment_reepay_checkout_debug')) {
             $log = new \Opencart\System\Library\Log('reepay_checkout.log');
@@ -857,7 +993,7 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
     }
 
     // For security-relevant rejections: written even when the debug setting is off.
-    private function logAlways(string $message): void {
+    public function logAlways(string $message): void {
         $log = new \Opencart\System\Library\Log('reepay_checkout.log');
         $log->write($message);
     }
