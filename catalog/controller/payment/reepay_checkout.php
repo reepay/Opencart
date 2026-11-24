@@ -82,11 +82,35 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
             return;
         }
 
-        if (strstr($invoice, '-')) {
-            $this->model_extension_frisbii_payment_reepay_checkout->mergePaymentField($order_id, ['invoice_id' => $invoice]);
+        $model = $this->model_extension_frisbii_payment_reepay_checkout;
+
+        // The accept URL is public and can be called again at any time (reload, late return from
+        // Frisbii, or anyone who knows the order id). Only the first confirmation of an
+        // unconfirmed order may change it; the order lock is the one the webhook uses, so
+        // accept() and the webhook can never both confirm the same order.
+        if (!$model->acquireOrderLock($order_id)) {
+            $model->logAlways('accept(): could not acquire lock for order ' . $order_id . ', status not changed');
+            $this->response->redirect($this->url->link('checkout/success', '', true));
+            return;
         }
 
-        $this->model_checkout_order->addHistory($order_info['order_id'], (int)$this->config->get('payment_reepay_checkout_order_status_id'));
+        try {
+            // Read again inside the lock: the webhook may have confirmed the order meanwhile.
+            $order_info = $this->model_checkout_order->getOrder($order_id);
+            $current_status_id = (int)($order_info['order_status_id'] ?? 0);
+
+            if ($current_status_id > 0) {
+                $model->logAlways('accept(): order ' . $order_id . ' already has status ' . $current_status_id . ', status not changed');
+            } else {
+                if (strstr($invoice, '-')) {
+                    $model->mergePaymentField($order_id, ['invoice_id' => $invoice]);
+                }
+
+                $this->model_checkout_order->addHistory($order_id, (int)$this->config->get('payment_reepay_checkout_order_status_id'));
+            }
+        } finally {
+            $model->releaseOrderLock($order_id);
+        }
 
         $this->response->redirect($this->url->link('checkout/success', '', true));
     }
