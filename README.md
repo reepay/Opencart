@@ -1,7 +1,7 @@
 # Frisbii Opencart
 Payment Plugin for Opencart of version 4
 
-Latest version: 1.3
+Latest version: 1.4
 
 Frisbii Payments for OpenCart connects your store to the Frisbii payment platform, giving your customers a seamless checkout experience with support for cards, MobilePay, ViaBill, Klarna, and many more local and international payment methods.
 
@@ -66,6 +66,10 @@ Keep the bundle up to date. Do not work around the error by disabling certificat
 You can create issues on our repository. In case of specific problems with your account, please contact [support@frisbii.com](mailto:support@frisbii.com)
 
 ## Changelog
+
+### v 1.4
+
+- [Fix] - Payment improvements 2.
 
 ### v 1.3
 
