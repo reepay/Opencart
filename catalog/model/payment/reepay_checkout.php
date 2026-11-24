@@ -829,6 +829,13 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
                 return self::WEBHOOK_IGNORED;
             }
 
+            // The webhook can confirm the order before the customer returns to accept(), so the
+            // paid invoice handle is stored here too. Only for payment events: a cancelled or
+            // refunded older invoice must not replace the handle of the invoice that was paid.
+            if (in_array($event, ['invoice_authorized', 'invoice_settled'], true)) {
+                $this->rememberInvoiceHandle($order_id, $handle);
+            }
+
             $status_id = (int)$this->config->get($status_key);
 
             if (!$status_id) {
@@ -873,6 +880,20 @@ class ReepayCheckout extends \Opencart\System\Engine\Model {
         $this->db->query(
             "SELECT RELEASE_LOCK('" . $this->db->escape($lock_name) . "')"
         );
+    }
+
+    /**
+     * Stores a unique invoice handle ("<order_id>-<timestamp>", used when the customer retries a
+     * payment) on the order, so admin capture/refund/cancel act on the invoice that was paid and not
+     * on "<order_id>". Call it only with a handle Frisbii confirmed as paid for this order, while
+     * holding the order lock. Both accept() and the payment webhooks call it, whichever comes first.
+     */
+    public function rememberInvoiceHandle(int $order_id, string $handle): void {
+        if (!preg_match('/^(\d+)-\d+$/D', $handle, $match) || (int)$match[1] !== $order_id) {
+            return;
+        }
+
+        $this->mergePaymentField($order_id, ['invoice_id' => $handle]);
     }
 
     public function mergePaymentField(int $order_id, array $data): void {

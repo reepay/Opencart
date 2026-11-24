@@ -99,13 +99,14 @@ class ReepayCheckout extends \Opencart\System\Engine\Controller {
             $order_info = $this->model_checkout_order->getOrder($order_id);
             $current_status_id = (int)($order_info['order_status_id'] ?? 0);
 
+            // Stored even when the webhook confirmed the order first: the handle was verified above
+            // as an authorized/settled invoice for this order and amount. The payment webhook stores
+            // it as well, which covers a lock timeout here.
+            $model->rememberInvoiceHandle($order_id, $invoice);
+
             if ($current_status_id > 0) {
                 $model->logAlways('accept(): order ' . $order_id . ' already has status ' . $current_status_id . ', status not changed');
             } else {
-                if (strstr($invoice, '-')) {
-                    $model->mergePaymentField($order_id, ['invoice_id' => $invoice]);
-                }
-
                 $this->model_checkout_order->addHistory($order_id, (int)$this->config->get('payment_reepay_checkout_order_status_id'));
             }
         } finally {
